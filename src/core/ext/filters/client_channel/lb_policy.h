@@ -19,197 +19,406 @@
 #ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_H
 #define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_H
 
-#include "src/core/ext/filters/client_channel/subchannel.h"
+#include <grpc/support/port_platform.h>
+
+#include <functional>
+#include <iterator>
+
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
+
+#include "src/core/ext/filters/client_channel/server_address.h"
+#include "src/core/ext/filters/client_channel/service_config.h"
+#include "src/core/ext/filters/client_channel/subchannel_interface.h"
+#include "src/core/lib/gprpp/orphanable.h"
+#include "src/core/lib/gprpp/ref_counted_ptr.h"
 #include "src/core/lib/iomgr/polling_entity.h"
+#include "src/core/lib/iomgr/work_serializer.h"
 #include "src/core/lib/transport/connectivity_state.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace grpc_core {
 
-/** A load balancing policy: specified by a vtable and a struct (which
-    is expected to be extended to contain some parameters) */
-typedef struct grpc_lb_policy grpc_lb_policy;
-typedef struct grpc_lb_policy_vtable grpc_lb_policy_vtable;
-typedef struct grpc_lb_policy_args grpc_lb_policy_args;
+extern DebugOnlyTraceFlag grpc_trace_lb_policy_refcount;
 
-#ifndef NDEBUG
-extern grpc_tracer_flag grpc_trace_lb_policy_refcount;
-#endif
+/// Interface for load balancing policies.
+///
+/// The following concepts are used here:
+///
+/// Channel: An abstraction that manages connections to backend servers
+///   on behalf of a client application.  The application creates a channel
+///   for a given server name and then sends calls (RPCs) on it, and the
+///   channel figures out which backend server to send each call to.  A channel
+///   contains a resolver, a load balancing policy (or a tree of LB policies),
+///   and a set of one or more subchannels.
+///
+/// Subchannel: A subchannel represents a connection to one backend server.
+///   The LB policy decides which subchannels to create, manages the
+///   connectivity state of those subchannels, and decides which subchannel
+///   to send any given call to.
+///
+/// Resolver: A plugin that takes a gRPC server URI and resolves it to a
+///   list of one or more addresses and a service config, as described
+///   in https://github.com/grpc/grpc/blob/master/doc/naming.md.  See
+///   resolver.h for the resolver API.
+///
+/// Load Balancing (LB) Policy: A plugin that takes a list of addresses
+///   from the resolver, maintains and manages a subchannel for each
+///   backend address, and decides which subchannel to send each call on.
+///   An LB policy has two parts:
+///   - A LoadBalancingPolicy, which deals with the control plane work of
+///     managing subchannels.
+///   - A SubchannelPicker, which handles the data plane work of
+///     determining which subchannel a given call should be sent on.
 
-struct grpc_lb_policy {
-  const grpc_lb_policy_vtable* vtable;
-  gpr_atm ref_pair;
-  /* owned pointer to interested parties in load balancing decisions */
-  grpc_pollset_set* interested_parties;
-  /* combiner under which lb_policy actions take place */
-  grpc_combiner* combiner;
+/// LoadBalacingPolicy API.
+///
+/// Note: All methods with a "Locked" suffix must be called from the
+/// work_serializer passed to the constructor.
+///
+/// Any I/O done by the LB policy should be done under the pollset_set
+/// returned by \a interested_parties().
+// TODO(roth): Once we move to EventManager-based polling, remove the
+// interested_parties() hooks from the API.
+class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
+ public:
+  // Represents backend metrics reported by the backend to the client.
+  struct BackendMetricData {
+    /// CPU utilization expressed as a fraction of available CPU resources.
+    double cpu_utilization;
+    /// Memory utilization expressed as a fraction of available memory
+    /// resources.
+    double mem_utilization;
+    /// Total requests per second being served by the backend.  This
+    /// should include all services that a backend is responsible for.
+    uint64_t requests_per_second;
+    /// Application-specific requests cost metrics.  Metric names are
+    /// determined by the application.  Each value is an absolute cost
+    /// (e.g. 3487 bytes of storage) associated with the request.
+    std::map<absl::string_view, double> request_cost;
+    /// Application-specific resource utilization metrics.  Metric names
+    /// are determined by the application.  Each value is expressed as a
+    /// fraction of total resources available.
+    std::map<absl::string_view, double> utilization;
+  };
+
+  /// Interface for accessing per-call state.
+  /// Implemented by the client channel and used by the SubchannelPicker.
+  class CallState {
+   public:
+    CallState() = default;
+    virtual ~CallState() = default;
+
+    /// Allocates memory associated with the call, which will be
+    /// automatically freed when the call is complete.
+    /// It is more efficient to use this than to allocate memory directly
+    /// for allocations that need to be made on a per-call basis.
+    virtual void* Alloc(size_t size) = 0;
+
+    /// Returns the backend metric data returned by the server for the call,
+    /// or null if no backend metric data was returned.
+    // TODO(roth): Move this out of CallState, since it should not be
+    // accessible to the picker, only to the recv_trailing_metadata_ready
+    // callback.  It should instead be in its own interface.
+    virtual const BackendMetricData* GetBackendMetricData() = 0;
+
+    /// EXPERIMENTAL API.
+    /// Returns the value of the call attribute \a key.
+    /// Keys are static strings, so an attribute can be accessed by an LB
+    /// policy implementation only if it knows about the internal key.
+    /// Returns a null string_view if key not found.
+    virtual absl::string_view ExperimentalGetCallAttribute(const char* key) = 0;
+  };
+
+  /// Interface for accessing metadata.
+  /// Implemented by the client channel and used by the SubchannelPicker.
+  class MetadataInterface {
+   public:
+    class iterator
+        : public std::iterator<
+              std::input_iterator_tag,
+              std::pair<absl::string_view, absl::string_view>,  // value_type
+              std::ptrdiff_t,  // difference_type
+              std::pair<absl::string_view, absl::string_view>*,  // pointer
+              std::pair<absl::string_view, absl::string_view>&   // reference
+              > {
+     public:
+      iterator(const MetadataInterface* md, intptr_t handle)
+          : md_(md), handle_(handle) {}
+      iterator& operator++() {
+        handle_ = md_->IteratorHandleNext(handle_);
+        return *this;
+      }
+      bool operator==(iterator other) const {
+        return md_ == other.md_ && handle_ == other.handle_;
+      }
+      bool operator!=(iterator other) const { return !(*this == other); }
+      value_type operator*() const { return md_->IteratorHandleGet(handle_); }
+
+     private:
+      friend class MetadataInterface;
+      const MetadataInterface* md_;
+      intptr_t handle_;
+    };
+
+    virtual ~MetadataInterface() = default;
+
+    /// Adds a key/value pair.
+    /// Does NOT take ownership of \a key or \a value.
+    /// Implementations must ensure that the key and value remain alive
+    /// until the call ends.  If desired, they may be allocated via
+    /// CallState::Alloc().
+    virtual void Add(absl::string_view key, absl::string_view value) = 0;
+
+    /// Iteration interface.
+    virtual iterator begin() const = 0;
+    virtual iterator end() const = 0;
+
+    /// Removes the element pointed to by \a it.
+    /// Returns an iterator pointing to the next element.
+    virtual iterator erase(iterator it) = 0;
+
+   protected:
+    intptr_t GetIteratorHandle(const iterator& it) const { return it.handle_; }
+
+   private:
+    friend class iterator;
+
+    virtual intptr_t IteratorHandleNext(intptr_t handle) const = 0;
+    virtual std::pair<absl::string_view /*key*/, absl::string_view /*value */>
+    IteratorHandleGet(intptr_t handle) const = 0;
+  };
+
+  /// Arguments used when picking a subchannel for a call.
+  struct PickArgs {
+    /// The path of the call.  Indicates the RPC service and method name.
+    absl::string_view path;
+    /// Initial metadata associated with the picking call.
+    /// The LB policy may use the existing metadata to influence its routing
+    /// decision, and it may add new metadata elements to be sent with the
+    /// call to the chosen backend.
+    MetadataInterface* initial_metadata;
+    /// An interface for accessing call state.  Can be used to allocate
+    /// memory associated with the call in an efficient way.
+    CallState* call_state;
+  };
+
+  /// The result of picking a subchannel for a call.
+  struct PickResult {
+    enum ResultType {
+      /// Pick complete.  If \a subchannel is non-null, the client channel
+      /// will immediately proceed with the call on that subchannel;
+      /// otherwise, it will drop the call.
+      PICK_COMPLETE,
+      /// Pick cannot be completed until something changes on the control
+      /// plane.  The client channel will queue the pick and try again the
+      /// next time the picker is updated.
+      PICK_QUEUE,
+      /// Pick failed.  If the call is wait_for_ready, the client channel
+      /// will wait for the next picker and try again; otherwise, it
+      /// will immediately fail the call with the status indicated via
+      /// \a error (although the call may be retried if the client channel
+      /// is configured to do so).
+      PICK_FAILED,
+    };
+    ResultType type;
+
+    /// Used only if type is PICK_COMPLETE.  Will be set to the selected
+    /// subchannel, or nullptr if the LB policy decides to drop the call.
+    RefCountedPtr<SubchannelInterface> subchannel;
+
+    /// Used only if type is PICK_FAILED.
+    /// Error to be set when returning a failure.
+    // TODO(roth): Replace this with something similar to grpc::Status,
+    // so that we don't expose grpc_error to this API.
+    grpc_error_handle error = GRPC_ERROR_NONE;
+
+    /// Used only if type is PICK_COMPLETE.
+    /// Callback set by LB policy to be notified of trailing metadata.
+    /// If set by LB policy, the client channel will invoke the callback
+    /// when trailing metadata is returned.
+    /// The metadata may be modified by the callback.  However, the callback
+    /// does not take ownership, so any data that needs to be used after
+    /// returning must be copied.
+    /// The call state can be used to obtain backend metric data.
+    // TODO(roth): The arguments to this callback should be moved into a
+    // struct, so that we can later add new fields without breaking
+    // existing implementations.
+    std::function<void(grpc_error_handle, MetadataInterface*, CallState*)>
+        recv_trailing_metadata_ready;
+  };
+
+  /// A subchannel picker is the object used to pick the subchannel to
+  /// use for a given call.  This is implemented by the LB policy and
+  /// used by the client channel to perform picks.
+  ///
+  /// Pickers are intended to encapsulate all of the state and logic
+  /// needed on the data plane (i.e., to actually process picks for
+  /// individual calls sent on the channel) while excluding all of the
+  /// state and logic needed on the control plane (i.e., resolver
+  /// updates, connectivity state notifications, etc); the latter should
+  /// live in the LB policy object itself.
+  ///
+  /// Currently, pickers are always accessed from within the
+  /// client_channel data plane mutex, so they do not have to be
+  /// thread-safe.
+  class SubchannelPicker {
+   public:
+    SubchannelPicker() = default;
+    virtual ~SubchannelPicker() = default;
+
+    virtual PickResult Pick(PickArgs args) = 0;
+  };
+
+  /// A proxy object implemented by the client channel and used by the
+  /// LB policy to communicate with the channel.
+  class ChannelControlHelper {
+   public:
+    ChannelControlHelper() = default;
+    virtual ~ChannelControlHelper() = default;
+
+    /// Creates a new subchannel with the specified channel args.
+    virtual RefCountedPtr<SubchannelInterface> CreateSubchannel(
+        ServerAddress address, const grpc_channel_args& args) = 0;
+
+    /// Sets the connectivity state and returns a new picker to be used
+    /// by the client channel.
+    virtual void UpdateState(grpc_connectivity_state state,
+                             const absl::Status& status,
+                             std::unique_ptr<SubchannelPicker>) = 0;
+
+    /// Requests that the resolver re-resolve.
+    virtual void RequestReresolution() = 0;
+
+    /// Adds a trace message associated with the channel.
+    enum TraceSeverity { TRACE_INFO, TRACE_WARNING, TRACE_ERROR };
+    virtual void AddTraceEvent(TraceSeverity severity,
+                               absl::string_view message) = 0;
+  };
+
+  /// Interface for configuration data used by an LB policy implementation.
+  /// Individual implementations will create a subclass that adds methods to
+  /// return the parameters they need.
+  class Config : public RefCounted<Config> {
+   public:
+    ~Config() override = default;
+
+    // Returns the load balancing policy name
+    virtual const char* name() const = 0;
+  };
+
+  /// Data passed to the UpdateLocked() method when new addresses and
+  /// config are available.
+  struct UpdateArgs {
+    ServerAddressList addresses;
+    RefCountedPtr<Config> config;
+    const grpc_channel_args* args = nullptr;
+
+    // TODO(roth): Remove everything below once channel args is
+    // converted to a copyable and movable C++ object.
+    UpdateArgs() = default;
+    ~UpdateArgs() { grpc_channel_args_destroy(args); }
+    UpdateArgs(const UpdateArgs& other);
+    UpdateArgs(UpdateArgs&& other) noexcept;
+    UpdateArgs& operator=(const UpdateArgs& other);
+    UpdateArgs& operator=(UpdateArgs&& other) noexcept;
+  };
+
+  /// Args used to instantiate an LB policy.
+  struct Args {
+    /// The work_serializer under which all LB policy calls will be run.
+    std::shared_ptr<WorkSerializer> work_serializer;
+    /// Channel control helper.
+    /// Note: LB policies MUST NOT call any method on the helper from
+    /// their constructor.
+    std::unique_ptr<ChannelControlHelper> channel_control_helper;
+    /// Channel args.
+    // TODO(roth): Find a better channel args representation for this API.
+    // TODO(roth): Clarify ownership semantics here -- currently, this
+    // does not take ownership of args, which is the opposite of how we
+    // handle them in UpdateArgs.
+    const grpc_channel_args* args = nullptr;
+  };
+
+  explicit LoadBalancingPolicy(Args args, intptr_t initial_refcount = 1);
+  ~LoadBalancingPolicy() override;
+
+  // Not copyable nor movable.
+  LoadBalancingPolicy(const LoadBalancingPolicy&) = delete;
+  LoadBalancingPolicy& operator=(const LoadBalancingPolicy&) = delete;
+
+  /// Returns the name of the LB policy.
+  virtual const char* name() const = 0;
+
+  /// Updates the policy with new data from the resolver.  Will be invoked
+  /// immediately after LB policy is constructed, and then again whenever
+  /// the resolver returns a new result.
+  virtual void UpdateLocked(UpdateArgs) = 0;  // NOLINT
+
+  /// Tries to enter a READY connectivity state.
+  /// This is a no-op by default, since most LB policies never go into
+  /// IDLE state.
+  virtual void ExitIdleLocked() {}
+
+  /// Resets connection backoff.
+  virtual void ResetBackoffLocked() = 0;
+
+  grpc_pollset_set* interested_parties() const { return interested_parties_; }
+
+  // Note: This must be invoked while holding the work_serializer.
+  void Orphan() override;
+
+  // A picker that returns PICK_QUEUE for all picks.
+  // Also calls the parent LB policy's ExitIdleLocked() method when the
+  // first pick is seen.
+  class QueuePicker : public SubchannelPicker {
+   public:
+    explicit QueuePicker(RefCountedPtr<LoadBalancingPolicy> parent)
+        : parent_(std::move(parent)) {}
+
+    ~QueuePicker() override { parent_.reset(DEBUG_LOCATION, "QueuePicker"); }
+
+    PickResult Pick(PickArgs args) override;
+
+   private:
+    RefCountedPtr<LoadBalancingPolicy> parent_;
+    bool exit_idle_called_ = false;
+  };
+
+  // A picker that returns PICK_TRANSIENT_FAILURE for all picks.
+  class TransientFailurePicker : public SubchannelPicker {
+   public:
+    explicit TransientFailurePicker(grpc_error_handle error) : error_(error) {}
+    ~TransientFailurePicker() override { GRPC_ERROR_UNREF(error_); }
+
+    PickResult Pick(PickArgs args) override;
+
+   private:
+    grpc_error_handle error_;
+  };
+
+ protected:
+  std::shared_ptr<WorkSerializer> work_serializer() const {
+    return work_serializer_;
+  }
+
+  // Note: LB policies MUST NOT call any method on the helper from their
+  // constructor.
+  ChannelControlHelper* channel_control_helper() const {
+    return channel_control_helper_.get();
+  }
+
+  /// Shuts down the policy.
+  virtual void ShutdownLocked() = 0;
+
+ private:
+  /// Work Serializer under which LB policy actions take place.
+  std::shared_ptr<WorkSerializer> work_serializer_;
+  /// Owned pointer to interested parties in load balancing decisions.
+  grpc_pollset_set* interested_parties_;
+  /// Channel control helper.
+  std::unique_ptr<ChannelControlHelper> channel_control_helper_;
 };
 
-/** Extra arguments for an LB pick */
-typedef struct grpc_lb_policy_pick_args {
-  /** Initial metadata associated with the picking call. */
-  grpc_metadata_batch* initial_metadata;
-  /** Bitmask used for selective cancelling. See \a
-   * grpc_lb_policy_cancel_picks() and \a GRPC_INITIAL_METADATA_* in
-   * grpc_types.h */
-  uint32_t initial_metadata_flags;
-  /** Storage for LB token in \a initial_metadata, or NULL if not used */
-  grpc_linked_mdelem* lb_token_mdelem_storage;
-} grpc_lb_policy_pick_args;
-
-struct grpc_lb_policy_vtable {
-  void (*destroy)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy);
-  void (*shutdown_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy);
-
-  /** \see grpc_lb_policy_pick */
-  int (*pick_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                     const grpc_lb_policy_pick_args* pick_args,
-                     grpc_connected_subchannel** target,
-                     grpc_call_context_element* context, void** user_data,
-                     grpc_closure* on_complete);
-
-  /** \see grpc_lb_policy_cancel_pick */
-  void (*cancel_pick_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                             grpc_connected_subchannel** target,
-                             grpc_error* error);
-
-  /** \see grpc_lb_policy_cancel_picks */
-  void (*cancel_picks_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                              uint32_t initial_metadata_flags_mask,
-                              uint32_t initial_metadata_flags_eq,
-                              grpc_error* error);
-
-  /** \see grpc_lb_policy_ping_one */
-  void (*ping_one_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                          grpc_closure* closure);
-
-  /** Try to enter a READY connectivity state */
-  void (*exit_idle_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy);
-
-  /** check the current connectivity of the lb_policy */
-  grpc_connectivity_state (*check_connectivity_locked)(
-      grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-      grpc_error** connectivity_error);
-
-  /** call notify when the connectivity state of a channel changes from *state.
-      Updates *state with the new state of the policy. Calling with a NULL \a
-      state cancels the subscription.  */
-  void (*notify_on_state_change_locked)(grpc_exec_ctx* exec_ctx,
-                                        grpc_lb_policy* policy,
-                                        grpc_connectivity_state* state,
-                                        grpc_closure* closure);
-
-  void (*update_locked)(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                        const grpc_lb_policy_args* args);
-};
-
-#ifndef NDEBUG
-
-/* Strong references: the policy will shutdown when they reach zero */
-#define GRPC_LB_POLICY_REF(p, r) \
-  grpc_lb_policy_ref((p), __FILE__, __LINE__, (r))
-#define GRPC_LB_POLICY_UNREF(exec_ctx, p, r) \
-  grpc_lb_policy_unref((exec_ctx), (p), __FILE__, __LINE__, (r))
-
-/* Weak references: they don't prevent the shutdown of the LB policy. When no
- * strong references are left but there are still weak ones, shutdown is called.
- * Once the weak reference also reaches zero, the LB policy is destroyed. */
-#define GRPC_LB_POLICY_WEAK_REF(p, r) \
-  grpc_lb_policy_weak_ref((p), __FILE__, __LINE__, (r))
-#define GRPC_LB_POLICY_WEAK_UNREF(exec_ctx, p, r) \
-  grpc_lb_policy_weak_unref((exec_ctx), (p), __FILE__, __LINE__, (r))
-void grpc_lb_policy_ref(grpc_lb_policy* policy, const char* file, int line,
-                        const char* reason);
-void grpc_lb_policy_unref(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                          const char* file, int line, const char* reason);
-void grpc_lb_policy_weak_ref(grpc_lb_policy* policy, const char* file, int line,
-                             const char* reason);
-void grpc_lb_policy_weak_unref(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                               const char* file, int line, const char* reason);
-#else
-#define GRPC_LB_POLICY_REF(p, r) grpc_lb_policy_ref((p))
-#define GRPC_LB_POLICY_UNREF(cl, p, r) grpc_lb_policy_unref((cl), (p))
-#define GRPC_LB_POLICY_WEAK_REF(p, r) grpc_lb_policy_weak_ref((p))
-#define GRPC_LB_POLICY_WEAK_UNREF(cl, p, r) grpc_lb_policy_weak_unref((cl), (p))
-void grpc_lb_policy_ref(grpc_lb_policy* policy);
-void grpc_lb_policy_unref(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy);
-void grpc_lb_policy_weak_ref(grpc_lb_policy* policy);
-void grpc_lb_policy_weak_unref(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy);
-#endif
-
-/** called by concrete implementations to initialize the base struct */
-void grpc_lb_policy_init(grpc_lb_policy* policy,
-                         const grpc_lb_policy_vtable* vtable,
-                         grpc_combiner* combiner);
-
-/** Finds an appropriate subchannel for a call, based on \a pick_args.
-
-    \a target will be set to the selected subchannel, or NULL on failure
-    or when the LB policy decides to drop the call.
-
-    Upon success, \a user_data will be set to whatever opaque information
-    may need to be propagated from the LB policy, or NULL if not needed.
-    \a context will be populated with context to pass to the subchannel
-    call, if needed.
-
-    If the pick succeeds and a result is known immediately, a non-zero
-    value will be returned.  Otherwise, \a on_complete will be invoked
-    once the pick is complete with its error argument set to indicate
-    success or failure.
-
-    Any IO should be done under the \a interested_parties \a grpc_pollset_set
-    in the \a grpc_lb_policy struct. */
-int grpc_lb_policy_pick_locked(grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-                               const grpc_lb_policy_pick_args* pick_args,
-                               grpc_connected_subchannel** target,
-                               grpc_call_context_element* context,
-                               void** user_data, grpc_closure* on_complete);
-
-/** Perform a connected subchannel ping (see \a grpc_connected_subchannel_ping)
-    against one of the connected subchannels managed by \a policy. */
-void grpc_lb_policy_ping_one_locked(grpc_exec_ctx* exec_ctx,
-                                    grpc_lb_policy* policy,
-                                    grpc_closure* closure);
-
-/** Cancel picks for \a target.
-    The \a on_complete callback of the pending picks will be invoked with \a
-    *target set to NULL. */
-void grpc_lb_policy_cancel_pick_locked(grpc_exec_ctx* exec_ctx,
-                                       grpc_lb_policy* policy,
-                                       grpc_connected_subchannel** target,
-                                       grpc_error* error);
-
-/** Cancel all pending picks for which their \a initial_metadata_flags (as given
-    in the call to \a grpc_lb_policy_pick) matches \a initial_metadata_flags_eq
-    when AND'd with \a initial_metadata_flags_mask */
-void grpc_lb_policy_cancel_picks_locked(grpc_exec_ctx* exec_ctx,
-                                        grpc_lb_policy* policy,
-                                        uint32_t initial_metadata_flags_mask,
-                                        uint32_t initial_metadata_flags_eq,
-                                        grpc_error* error);
-
-/** Try to enter a READY connectivity state */
-void grpc_lb_policy_exit_idle_locked(grpc_exec_ctx* exec_ctx,
-                                     grpc_lb_policy* policy);
-
-/* Call notify when the connectivity state of a channel changes from \a *state.
- * Updates \a *state with the new state of the policy */
-void grpc_lb_policy_notify_on_state_change_locked(
-    grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-    grpc_connectivity_state* state, grpc_closure* closure);
-
-grpc_connectivity_state grpc_lb_policy_check_connectivity_locked(
-    grpc_exec_ctx* exec_ctx, grpc_lb_policy* policy,
-    grpc_error** connectivity_error);
-
-/** Update \a policy with \a lb_policy_args. */
-void grpc_lb_policy_update_locked(grpc_exec_ctx* exec_ctx,
-                                  grpc_lb_policy* policy,
-                                  const grpc_lb_policy_args* lb_policy_args);
-
-#ifdef __cplusplus
-}
-#endif
+}  // namespace grpc_core
 
 #endif /* GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_LB_POLICY_H */

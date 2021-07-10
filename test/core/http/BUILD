@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//bazel:grpc_build_system.bzl", "grpc_cc_library", "grpc_cc_test", "grpc_cc_binary", "grpc_package")
+load("//bazel:grpc_build_system.bzl", "grpc_cc_binary", "grpc_cc_library", "grpc_cc_test", "grpc_package")
 
 grpc_package(name = "test/core/http")
 
@@ -23,8 +23,9 @@ load("//test/core/util:grpc_fuzzer.bzl", "grpc_fuzzer")
 grpc_fuzzer(
     name = "response_fuzzer",
     srcs = ["response_fuzzer.cc"],
-    language = "C++",
     corpus = "response_corpus",
+    language = "C++",
+    tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
@@ -35,8 +36,9 @@ grpc_fuzzer(
 grpc_fuzzer(
     name = "request_fuzzer",
     srcs = ["request_fuzzer.cc"],
-    language = "C++",
     corpus = "request_corpus",
+    language = "C++",
+    tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
@@ -65,13 +67,18 @@ load("//test/core/util:grpc_fuzzer.bzl", "grpc_fuzzer")
 grpc_cc_test(
     name = "httpcli_test",
     srcs = ["httpcli_test.cc"],
+    data = [
+        "python_wrapper.sh",
+        "test_server.py",
+        "//src/core/tsi/test_creds:server1.key",
+        "//src/core/tsi/test_creds:server1.pem",
+    ],
     language = "C++",
-    data = ["test_server.py"],
+    tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
         "//test/core/end2end:ssl_test_data",
-        "//test/core/util:gpr_test_util",
         "//test/core/util:grpc_test_util",
     ],
 )
@@ -79,13 +86,19 @@ grpc_cc_test(
 grpc_cc_test(
     name = "httpscli_test",
     srcs = ["httpscli_test.cc"],
+    data = [
+        "python_wrapper.sh",
+        "test_server.py",
+        "//src/core/tsi/test_creds:ca.pem",
+        "//src/core/tsi/test_creds:server1.key",
+        "//src/core/tsi/test_creds:server1.pem",
+    ],
     language = "C++",
-    data = ["test_server.py"],
+    tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
         "//test/core/end2end:ssl_test_data",
-        "//test/core/util:gpr_test_util",
         "//test/core/util:grpc_test_util",
     ],
 )
@@ -94,11 +107,23 @@ grpc_cc_test(
     name = "parser_test",
     srcs = ["parser_test.cc"],
     language = "C++",
+    uses_polling = False,
     deps = [
         "//:gpr",
         "//:grpc",
         "//test/core/end2end:ssl_test_data",
-        "//test/core/util:gpr_test_util",
+        "//test/core/util:grpc_test_util",
+    ],
+)
+
+grpc_cc_test(
+    name = "format_request_test",
+    srcs = ["format_request_test.cc"],
+    language = "C++",
+    deps = [
+        "//:gpr",
+        "//:grpc",
+        "//test/core/end2end:ssl_test_data",
         "//test/core/util:grpc_test_util",
     ],
 )

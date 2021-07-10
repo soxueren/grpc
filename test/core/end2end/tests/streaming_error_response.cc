@@ -28,10 +28,9 @@
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 #include <grpc/support/time.h>
-#include <grpc/support/useful.h>
 #include "test/core/end2end/cq_verifier.h"
 
-static void* tag(intptr_t t) { return (void*)t; }
+static void* tag(intptr_t t) { return reinterpret_cast<void*>(t); }
 
 static grpc_end2end_test_fixture begin_test(grpc_end2end_test_config config,
                                             const char* test_name,
@@ -89,8 +88,12 @@ static void end_test(grpc_end2end_test_fixture* f) {
   grpc_completion_queue_destroy(f->shutdown_cq);
 }
 
-/* Client sends a request with payload, server reads then returns status. */
-static void test(grpc_end2end_test_config config, bool request_status_early) {
+// Client sends a request with payload, potentially requesting status early. The
+// server reads and streams responses. The client cancels the RPC to get an
+// error status. (Server sending a non-OK status is not considered an error
+// status.)
+static void test(grpc_end2end_test_config config, bool request_status_early,
+                 bool recv_message_separately) {
   grpc_call* c;
   grpc_call* s;
   grpc_slice response_payload1_slice = grpc_slice_from_copied_string("hello");
@@ -111,17 +114,16 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
   grpc_byte_buffer* response_payload1_recv = nullptr;
   grpc_byte_buffer* response_payload2_recv = nullptr;
   grpc_call_details call_details;
-  grpc_status_code status;
+  grpc_status_code status = GRPC_STATUS_OK;
   grpc_call_error error;
   grpc_slice details;
   int was_cancelled = 2;
 
   gpr_timespec deadline = five_seconds_from_now();
-  c = grpc_channel_create_call(
-      f.client, nullptr, GRPC_PROPAGATE_DEFAULTS, f.cq,
-      grpc_slice_from_static_string("/foo"),
-      get_host_override_slice("foo.test.google.fr:1234", config), deadline,
-      nullptr);
+  GPR_ASSERT(!recv_message_separately || request_status_early);
+  c = grpc_channel_create_call(f.client, nullptr, GRPC_PROPAGATE_DEFAULTS, f.cq,
+                               grpc_slice_from_static_string("/foo"), nullptr,
+                               deadline, nullptr);
   GPR_ASSERT(c);
 
   grpc_metadata_array_init(&initial_metadata_recv);
@@ -139,9 +141,11 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
   op->op = GRPC_OP_RECV_INITIAL_METADATA;
   op->data.recv_initial_metadata.recv_initial_metadata = &initial_metadata_recv;
   op++;
-  op->op = GRPC_OP_RECV_MESSAGE;
-  op->data.recv_message.recv_message = &response_payload1_recv;
-  op++;
+  if (!recv_message_separately) {
+    op->op = GRPC_OP_RECV_MESSAGE;
+    op->data.recv_message.recv_message = &response_payload1_recv;
+    op++;
+  }
   if (request_status_early) {
     op->op = GRPC_OP_RECV_STATUS_ON_CLIENT;
     op->data.recv_status_on_client.trailing_metadata = &trailing_metadata_recv;
@@ -149,7 +153,8 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
     op->data.recv_status_on_client.status_details = &details;
     op++;
   }
-  error = grpc_call_start_batch(c, ops, (size_t)(op - ops), tag(1), nullptr);
+  error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(1),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   GPR_ASSERT(GRPC_CALL_OK == grpc_server_request_call(
@@ -166,12 +171,27 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
   op->op = GRPC_OP_SEND_MESSAGE;
   op->data.send_message.send_message = response_payload1;
   op++;
-  error = grpc_call_start_batch(s, ops, (size_t)(op - ops), tag(102), nullptr);
+  error = grpc_call_start_batch(s, ops, static_cast<size_t>(op - ops), tag(102),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
+
+  if (recv_message_separately) {
+    memset(ops, 0, sizeof(ops));
+    op = ops;
+    op->op = GRPC_OP_RECV_MESSAGE;
+    op->data.recv_message.recv_message = &response_payload1_recv;
+    op++;
+    error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(4),
+                                  nullptr);
+    GPR_ASSERT(GRPC_CALL_OK == error);
+  }
 
   CQ_EXPECT_COMPLETION(cqv, tag(102), 1);
   if (!request_status_early) {
     CQ_EXPECT_COMPLETION(cqv, tag(1), 1);
+  }
+  if (recv_message_separately) {
+    CQ_EXPECT_COMPLETION(cqv, tag(4), 1);
   }
   cq_verify(cqv);
 
@@ -180,10 +200,15 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
   op->op = GRPC_OP_SEND_MESSAGE;
   op->data.send_message.send_message = response_payload2;
   op++;
-  error = grpc_call_start_batch(s, ops, (size_t)(op - ops), tag(103), nullptr);
+  error = grpc_call_start_batch(s, ops, static_cast<size_t>(op - ops), tag(103),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
-
-  CQ_EXPECT_COMPLETION(cqv, tag(103), 1);
+  // The success of the op depends on whether the payload is written before the
+  // transport sees the end of stream. If the stream has been write closed
+  // before the write completes, it would fail, otherwise it would succeed.
+  // Since this behavior is dependent on the transport implementation, we allow
+  // any success status with this op.
+  CQ_EXPECT_COMPLETION_ANY_STATUS(cqv, tag(103));
 
   if (!request_status_early) {
     memset(ops, 0, sizeof(ops));
@@ -191,25 +216,23 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
     op->op = GRPC_OP_RECV_MESSAGE;
     op->data.recv_message.recv_message = &response_payload2_recv;
     op++;
-    error = grpc_call_start_batch(c, ops, (size_t)(op - ops), tag(2), nullptr);
+    error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(2),
+                                  nullptr);
     GPR_ASSERT(GRPC_CALL_OK == error);
 
     CQ_EXPECT_COMPLETION(cqv, tag(2), 1);
     cq_verify(cqv);
   }
 
+  // Cancel the call so that the client sets up an error status.
+  grpc_call_cancel(c, nullptr);
   memset(ops, 0, sizeof(ops));
   op = ops;
   op->op = GRPC_OP_RECV_CLOSE_ON_SERVER;
   op->data.recv_close_on_server.cancelled = &was_cancelled;
   op++;
-  op->op = GRPC_OP_SEND_STATUS_FROM_SERVER;
-  op->data.send_status_from_server.trailing_metadata_count = 0;
-  op->data.send_status_from_server.status = GRPC_STATUS_FAILED_PRECONDITION;
-  grpc_slice status_details = grpc_slice_from_static_string("xyz");
-  op->data.send_status_from_server.status_details = &status_details;
-  op++;
-  error = grpc_call_start_batch(s, ops, (size_t)(op - ops), tag(104), nullptr);
+  error = grpc_call_start_batch(s, ops, static_cast<size_t>(op - ops), tag(104),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   CQ_EXPECT_COMPLETION(cqv, tag(104), 1);
@@ -226,7 +249,8 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
     op->data.recv_status_on_client.status = &status;
     op->data.recv_status_on_client.status_details = &details;
     op++;
-    error = grpc_call_start_batch(c, ops, (size_t)(op - ops), tag(3), nullptr);
+    error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(3),
+                                  nullptr);
     GPR_ASSERT(GRPC_CALL_OK == error);
 
     CQ_EXPECT_COMPLETION(cqv, tag(3), 1);
@@ -236,11 +260,7 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
     GPR_ASSERT(response_payload2_recv != nullptr);
   }
 
-  GPR_ASSERT(status == GRPC_STATUS_FAILED_PRECONDITION);
-  GPR_ASSERT(0 == grpc_slice_str_cmp(details, "xyz"));
-  GPR_ASSERT(0 == grpc_slice_str_cmp(call_details.method, "/foo"));
-  validate_host_override_string("foo.test.google.fr:1234", call_details.host,
-                                config);
+  GPR_ASSERT(status == GRPC_STATUS_CANCELLED);
   GPR_ASSERT(was_cancelled == 1);
 
   grpc_slice_unref(details);
@@ -264,8 +284,9 @@ static void test(grpc_end2end_test_config config, bool request_status_early) {
 }
 
 void streaming_error_response(grpc_end2end_test_config config) {
-  test(config, false);
-  test(config, true);
+  test(config, false, false);
+  test(config, true, false);
+  test(config, true, true);
 }
 
 void streaming_error_response_pre_init(void) {}

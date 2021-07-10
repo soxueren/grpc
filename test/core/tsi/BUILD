@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//bazel:grpc_build_system.bzl", "grpc_cc_library", "grpc_cc_test", "grpc_cc_binary", "grpc_package")
+load("//bazel:grpc_build_system.bzl", "grpc_cc_binary", "grpc_cc_library", "grpc_cc_test", "grpc_package")
 
 licenses(["notice"])  # Apache v2
 
-grpc_package(name = "test/core/tsi")
+grpc_package(
+    name = "test/core/tsi",
+    visibility = "public",
+)
 
 grpc_cc_library(
     name = "transport_security_test_lib",
@@ -34,13 +37,27 @@ grpc_cc_test(
     language = "C++",
     deps = [
         ":transport_security_test_lib",
-        "//:grpc",
         "//:gpr",
+        "//:grpc",
         "//:tsi",
-        "//test/core/util:gpr_test_util",
+        "//test/core/util:grpc_test_util",
     ],
 )
 
+grpc_cc_test(
+    name = "ssl_session_cache_test",
+    srcs = ["ssl_session_cache_test.cc"],
+    external_deps = [
+        "gtest",
+    ],
+    language = "C++",
+    deps = [
+        "//:gpr",
+        "//:grpc",
+        "//:tsi",
+        "//test/core/util:grpc_test_util",
+    ],
+)
 
 grpc_cc_test(
     name = "ssl_transport_security_test",
@@ -53,18 +70,21 @@ grpc_cc_test(
         "//src/core/tsi/test_creds:ca.pem",
         "//src/core/tsi/test_creds:client.key",
         "//src/core/tsi/test_creds:client.pem",
+        "//src/core/tsi/test_creds:multi-domain.key",
+        "//src/core/tsi/test_creds:multi-domain.pem",
         "//src/core/tsi/test_creds:server0.key",
         "//src/core/tsi/test_creds:server0.pem",
         "//src/core/tsi/test_creds:server1.key",
         "//src/core/tsi/test_creds:server1.pem",
     ],
     language = "C++",
+    tags = ["no_windows"],
     deps = [
         ":transport_security_test_lib",
-        "//:grpc",
         "//:gpr",
+        "//:grpc",
         "//:tsi",
-        "//test/core/util:gpr_test_util",
+        "//test/core/util:grpc_test_util",
     ],
 )
 
@@ -73,9 +93,8 @@ grpc_cc_test(
     srcs = ["transport_security_test.cc"],
     language = "C++",
     deps = [
-        "//:grpc",
         "//:gpr",
-        "//test/core/util:gpr_test_util",
+        "//:grpc",
         "//test/core/util:grpc_test_util",
     ],
 )

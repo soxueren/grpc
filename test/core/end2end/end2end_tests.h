@@ -21,23 +21,25 @@
 
 #include <grpc/grpc.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef struct grpc_end2end_test_fixture grpc_end2end_test_fixture;
 typedef struct grpc_end2end_test_config grpc_end2end_test_config;
 
 /* Test feature flags. */
 #define FEATURE_MASK_SUPPORTS_DELAYED_CONNECTION 1
 #define FEATURE_MASK_SUPPORTS_HOSTNAME_VERIFICATION 2
+// Feature mask supports call credentials with a minimum security level of
+// GRPC_PRIVACY_AND_INTEGRITY.
 #define FEATURE_MASK_SUPPORTS_PER_CALL_CREDENTIALS 4
-#define FEATURE_MASK_SUPPORTS_REQUEST_PROXYING 8
-#define FEATURE_MASK_SUPPORTS_CLIENT_CHANNEL 16
-#define FEATURE_MASK_SUPPORTS_AUTHORITY_HEADER 32
-#define FEATURE_MASK_DOES_NOT_SUPPORT_RESOURCE_QUOTA_SERVER 64
-#define FEATURE_MASK_DOES_NOT_SUPPORT_NETWORK_STATUS_CHANGE 128
-#define FEATURE_MASK_SUPPORTS_WORKAROUNDS 256
+// Feature mask supports call credentials with a minimum security level of
+// GRPC_SECURTITY_NONE.
+#define FEATURE_MASK_SUPPORTS_PER_CALL_CREDENTIALS_LEVEL_INSECURE 8
+#define FEATURE_MASK_SUPPORTS_REQUEST_PROXYING 16
+#define FEATURE_MASK_SUPPORTS_CLIENT_CHANNEL 32
+#define FEATURE_MASK_SUPPORTS_AUTHORITY_HEADER 64
+#define FEATURE_MASK_DOES_NOT_SUPPORT_RESOURCE_QUOTA_SERVER 128
+#define FEATURE_MASK_DOES_NOT_SUPPORT_NETWORK_STATUS_CHANGE 256
+#define FEATURE_MASK_SUPPORTS_WORKAROUNDS 512
+#define FEATURE_MASK_DOES_NOT_SUPPORT_CLIENT_HANDSHAKE_COMPLETE_FIRST 1024
 
 #define FAIL_AUTH_CHECK_SERVER_ARG_NAME "fail_auth_check"
 
@@ -55,6 +57,11 @@ struct grpc_end2end_test_config {
 
   /* Which features are supported by this fixture. See feature flags above. */
   uint32_t feature_mask;
+
+  /* If the call host is setup by the fixture (for example, via the
+   * GRPC_SSL_TARGET_NAME_OVERRIDE_ARG channel arg), which value should the test
+   * expect to find in call_details.host */
+  const char* overridden_call_host;
 
   grpc_end2end_test_fixture (*create_fixture)(grpc_channel_args* client_args,
                                               grpc_channel_args* server_args);
@@ -77,9 +84,5 @@ const grpc_slice* get_host_override_slice(const char* str,
 
 void validate_host_override_string(const char* pattern, grpc_slice str,
                                    grpc_end2end_test_config config);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* GRPC_TEST_CORE_END2END_END2END_TESTS_H */

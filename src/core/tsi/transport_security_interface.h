@@ -19,14 +19,12 @@
 #ifndef GRPC_CORE_TSI_TRANSPORT_SECURITY_INTERFACE_H
 #define GRPC_CORE_TSI_TRANSPORT_SECURITY_INTERFACE_H
 
+#include <grpc/support/port_platform.h>
+
 #include <stdint.h>
 #include <stdlib.h>
 
 #include "src/core/lib/debug/trace.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /* --- tsi result ---  */
 
@@ -44,8 +42,18 @@ typedef enum {
   TSI_PROTOCOL_FAILURE = 10,
   TSI_HANDSHAKE_IN_PROGRESS = 11,
   TSI_OUT_OF_RESOURCES = 12,
-  TSI_ASYNC = 13
+  TSI_ASYNC = 13,
+  TSI_HANDSHAKE_SHUTDOWN = 14,
+  TSI_CLOSE_NOTIFY = 15,  // Indicates that the connection should be closed.
 } tsi_result;
+
+typedef enum {
+  TSI_SECURITY_MIN,
+  TSI_SECURITY_NONE = TSI_SECURITY_MIN,
+  TSI_INTEGRITY_ONLY,
+  TSI_PRIVACY_AND_INTEGRITY,
+  TSI_SECURITY_MAX = TSI_PRIVACY_AND_INTEGRITY,
+} tsi_security_level;
 
 typedef enum {
   // Default option
@@ -56,11 +64,17 @@ typedef enum {
   TSI_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY,
 } tsi_client_certificate_request_type;
 
+typedef enum {
+  TSI_TLS1_2,
+  TSI_TLS1_3,
+} tsi_tls_version;
+
 const char* tsi_result_to_string(tsi_result result);
+const char* tsi_security_level_to_string(tsi_security_level security_level);
 
 /* --- tsi tracing --- */
 
-extern grpc_tracer_flag tsi_tracing_enabled;
+extern grpc_core::TraceFlag tsi_tracing_enabled;
 
 /* -- tsi_zero_copy_grpc_protector object --
 
@@ -186,6 +200,9 @@ void tsi_frame_protector_destroy(tsi_frame_protector* self);
 /* This property is of type TSI_PEER_PROPERTY_STRING.  */
 #define TSI_CERTIFICATE_TYPE_PEER_PROPERTY "certificate_type"
 
+/* This property represents security level of a channel. */
+#define TSI_SECURITY_LEVEL_PEER_PROPERTY "security_level"
+
 /* Property values may contain NULL characters just like C++ strings.
    The length field gives the length of the string. */
 typedef struct tsi_peer_property {
@@ -196,11 +213,10 @@ typedef struct tsi_peer_property {
   } value;
 } tsi_peer_property;
 
-typedef struct {
+struct tsi_peer {
   tsi_peer_property* properties;
   size_t property_count;
-} tsi_peer;
-
+};
 /* Destructs the tsi_peer object. */
 void tsi_peer_destruct(tsi_peer* self);
 
@@ -231,7 +247,7 @@ tsi_result tsi_handshaker_result_create_frame_protector(
    consequence, the caller must not free the bytes.  */
 tsi_result tsi_handshaker_result_get_unused_bytes(
     const tsi_handshaker_result* self, const unsigned char** bytes,
-    size_t* byte_size);
+    size_t* bytes_size);
 
 /* This method releases the tsi_handshaker_handshaker object. After this method
    is called, no other method can be called on the object.  */
@@ -333,6 +349,8 @@ void tsi_handshaker_result_destroy(tsi_handshaker_result* self);
    }
    ------------------------------------------------------------------------   */
 typedef struct tsi_handshaker tsi_handshaker;
+
+/* TODO(jiangtaoli2016): Cleans up deprecated methods when we are ready. */
 
 /* TO BE DEPRECATED SOON. Use tsi_handshaker_next instead.
    Gets bytes that need to be sent to the peer.
@@ -442,6 +460,13 @@ tsi_result tsi_handshaker_next(
     size_t* bytes_to_send_size, tsi_handshaker_result** handshaker_result,
     tsi_handshaker_on_next_done_cb cb, void* user_data);
 
+/* This method shuts down a TSI handshake that is in progress.
+ *
+ * This method will be invoked when TSI handshake should be terminated before
+ * being finished in order to free any resources being used.
+ */
+void tsi_handshaker_shutdown(tsi_handshaker* self);
+
 /* This method releases the tsi_handshaker object. After this method is called,
    no other method can be called on the object.  */
 void tsi_handshaker_destroy(tsi_handshaker* self);
@@ -452,9 +477,5 @@ void tsi_init();
 
 /* This method destroys the shared objects created by tsi_init.  */
 void tsi_destroy();
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* GRPC_CORE_TSI_TRANSPORT_SECURITY_INTERFACE_H */

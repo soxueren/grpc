@@ -23,24 +23,19 @@
 
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* Data structure to map a uint32_t to a data object (represented by a void*)
 
    Represented as a sorted array of keys, and a corresponding array of values.
    Lookups are performed with binary search.
    Adds are restricted to strictly higher keys than previously seen (this is
    guaranteed by http2). */
-typedef struct {
+struct grpc_chttp2_stream_map {
   uint32_t* keys;
   void** values;
   size_t count;
   size_t free;
   size_t capacity;
-} grpc_chttp2_stream_map;
-
+};
 void grpc_chttp2_stream_map_init(grpc_chttp2_stream_map* map,
                                  size_t initial_capacity);
 void grpc_chttp2_stream_map_destroy(grpc_chttp2_stream_map* map);
@@ -68,9 +63,5 @@ void grpc_chttp2_stream_map_for_each(grpc_chttp2_stream_map* map,
                                      void (*f)(void* user_data, uint32_t key,
                                                void* value),
                                      void* user_data);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* GRPC_CORE_EXT_TRANSPORT_CHTTP2_TRANSPORT_STREAM_MAP_H */

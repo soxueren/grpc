@@ -21,12 +21,10 @@
 #include <grpc/grpc.h>
 #include <grpc/grpc_security.h>
 #include <grpc/support/log.h>
-#include <grpc/support/useful.h>
 
 #include "src/core/lib/iomgr/load_file.h"
 
 #include "test/core/bad_ssl/server_common.h"
-#include "test/core/end2end/data/ssl_test_data.h"
 
 /* This server will present an untrusted cert to the connecting client,
  * causing the SSL handshake to fail */
@@ -46,8 +44,10 @@ int main(int argc, char** argv) {
   GPR_ASSERT(GRPC_LOG_IF_ERROR(
       "load_file",
       grpc_load_file("src/core/tsi/test_creds/badserver.key", 1, &key_slice)));
-  pem_key_cert_pair.private_key = (const char*)GRPC_SLICE_START_PTR(key_slice);
-  pem_key_cert_pair.cert_chain = (const char*)GRPC_SLICE_START_PTR(cert_slice);
+  pem_key_cert_pair.private_key =
+      reinterpret_cast<const char*> GRPC_SLICE_START_PTR(key_slice);
+  pem_key_cert_pair.cert_chain =
+      reinterpret_cast<const char*> GRPC_SLICE_START_PTR(cert_slice);
 
   ssl_creds = grpc_ssl_server_credentials_create(nullptr, &pem_key_cert_pair, 1,
                                                  0, nullptr);

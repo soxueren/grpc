@@ -27,7 +27,6 @@
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 #include <grpc/support/time.h>
-#include <grpc/support/useful.h>
 
 #include "src/core/lib/channel/channel_stack_builder.h"
 #include "src/core/lib/surface/channel_init.h"
@@ -40,7 +39,7 @@ static gpr_mu g_mu;
 static gpr_timespec g_client_latency;
 static gpr_timespec g_server_latency;
 
-static void* tag(intptr_t t) { return (void*)t; }
+static void* tag(intptr_t t) { return reinterpret_cast<void*>(t); }
 
 static grpc_end2end_test_fixture begin_test(grpc_end2end_test_config config,
                                             const char* test_name,
@@ -123,13 +122,12 @@ static void test_request(grpc_end2end_test_config config) {
   g_client_latency = gpr_time_0(GPR_TIMESPAN);
   g_server_latency = gpr_time_0(GPR_TIMESPAN);
   gpr_mu_unlock(&g_mu);
-  const gpr_timespec start_time = gpr_now(GPR_CLOCK_MONOTONIC);
+  const gpr_timespec start_time = gpr_now(GPR_CLOCK_REALTIME);
 
   gpr_timespec deadline = five_seconds_from_now();
-  c = grpc_channel_create_call(
-      f.client, nullptr, GRPC_PROPAGATE_DEFAULTS, f.cq,
-      grpc_slice_from_static_string("/foo"),
-      get_host_override_slice("foo.test.google.fr", config), deadline, nullptr);
+  c = grpc_channel_create_call(f.client, nullptr, GRPC_PROPAGATE_DEFAULTS, f.cq,
+                               grpc_slice_from_static_string("/foo"), nullptr,
+                               deadline, nullptr);
   GPR_ASSERT(c);
 
   grpc_metadata_array_init(&initial_metadata_recv);
@@ -166,7 +164,8 @@ static void test_request(grpc_end2end_test_config config) {
   op->flags = 0;
   op->reserved = nullptr;
   op++;
-  error = grpc_call_start_batch(c, ops, (size_t)(op - ops), tag(1), nullptr);
+  error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(1),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   error =
@@ -197,7 +196,8 @@ static void test_request(grpc_end2end_test_config config) {
   op->flags = 0;
   op->reserved = nullptr;
   op++;
-  error = grpc_call_start_batch(s, ops, (size_t)(op - ops), tag(102), nullptr);
+  error = grpc_call_start_batch(s, ops, static_cast<size_t>(op - ops), tag(102),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   CQ_EXPECT_COMPLETION(cqv, tag(102), 1);
@@ -224,7 +224,7 @@ static void test_request(grpc_end2end_test_config config) {
   end_test(&f);
   config.tear_down_data(&f);
 
-  const gpr_timespec end_time = gpr_now(GPR_CLOCK_MONOTONIC);
+  const gpr_timespec end_time = gpr_now(GPR_CLOCK_REALTIME);
   const gpr_timespec max_latency = gpr_time_sub(end_time, start_time);
 
   // Perform checks after test tear-down
@@ -247,38 +247,33 @@ static void test_request(grpc_end2end_test_config config) {
  * Test latency filter
  */
 
-static grpc_error* init_call_elem(grpc_exec_ctx* exec_ctx,
-                                  grpc_call_element* elem,
-                                  const grpc_call_element_args* args) {
+static grpc_error_handle init_call_elem(
+    grpc_call_element* /*elem*/, const grpc_call_element_args* /*args*/) {
   return GRPC_ERROR_NONE;
 }
 
-static void client_destroy_call_elem(grpc_exec_ctx* exec_ctx,
-                                     grpc_call_element* elem,
+static void client_destroy_call_elem(grpc_call_element* /*elem*/,
                                      const grpc_call_final_info* final_info,
-                                     grpc_closure* ignored) {
+                                     grpc_closure* /*ignored*/) {
   gpr_mu_lock(&g_mu);
   g_client_latency = final_info->stats.latency;
   gpr_mu_unlock(&g_mu);
 }
 
-static void server_destroy_call_elem(grpc_exec_ctx* exec_ctx,
-                                     grpc_call_element* elem,
+static void server_destroy_call_elem(grpc_call_element* /*elem*/,
                                      const grpc_call_final_info* final_info,
-                                     grpc_closure* ignored) {
+                                     grpc_closure* /*ignored*/) {
   gpr_mu_lock(&g_mu);
   g_server_latency = final_info->stats.latency;
   gpr_mu_unlock(&g_mu);
 }
 
-static grpc_error* init_channel_elem(grpc_exec_ctx* exec_ctx,
-                                     grpc_channel_element* elem,
-                                     grpc_channel_element_args* args) {
+static grpc_error_handle init_channel_elem(
+    grpc_channel_element* /*elem*/, grpc_channel_element_args* /*args*/) {
   return GRPC_ERROR_NONE;
 }
 
-static void destroy_channel_elem(grpc_exec_ctx* exec_ctx,
-                                 grpc_channel_element* elem) {}
+static void destroy_channel_elem(grpc_channel_element* /*elem*/) {}
 
 static const grpc_channel_filter test_client_filter = {
     grpc_call_next_op,
@@ -310,9 +305,8 @@ static const grpc_channel_filter test_server_filter = {
  * Registration
  */
 
-static bool maybe_add_filter(grpc_exec_ctx* exec_ctx,
-                             grpc_channel_stack_builder* builder, void* arg) {
-  grpc_channel_filter* filter = (grpc_channel_filter*)arg;
+static bool maybe_add_filter(grpc_channel_stack_builder* builder, void* arg) {
+  grpc_channel_filter* filter = static_cast<grpc_channel_filter*>(arg);
   if (g_enable_filter) {
     // Want to add the filter as close to the end as possible, to make
     // sure that all of the filters work well together.  However, we
@@ -332,15 +326,15 @@ static bool maybe_add_filter(grpc_exec_ctx* exec_ctx,
 
 static void init_plugin(void) {
   gpr_mu_init(&g_mu);
-  grpc_channel_init_register_stage(GRPC_CLIENT_CHANNEL, INT_MAX,
-                                   maybe_add_filter,
-                                   (void*)&test_client_filter);
-  grpc_channel_init_register_stage(GRPC_CLIENT_DIRECT_CHANNEL, INT_MAX,
-                                   maybe_add_filter,
-                                   (void*)&test_client_filter);
-  grpc_channel_init_register_stage(GRPC_SERVER_CHANNEL, INT_MAX,
-                                   maybe_add_filter,
-                                   (void*)&test_server_filter);
+  grpc_channel_init_register_stage(
+      GRPC_CLIENT_CHANNEL, INT_MAX, maybe_add_filter,
+      const_cast<grpc_channel_filter*>(&test_client_filter));
+  grpc_channel_init_register_stage(
+      GRPC_CLIENT_DIRECT_CHANNEL, INT_MAX, maybe_add_filter,
+      const_cast<grpc_channel_filter*>(&test_client_filter));
+  grpc_channel_init_register_stage(
+      GRPC_SERVER_CHANNEL, INT_MAX, maybe_add_filter,
+      const_cast<grpc_channel_filter*>(&test_server_filter));
 }
 
 static void destroy_plugin(void) { gpr_mu_destroy(&g_mu); }

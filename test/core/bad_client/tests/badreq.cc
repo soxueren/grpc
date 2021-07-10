@@ -20,6 +20,8 @@
 
 #include <string.h>
 
+#include <grpc/grpc.h>
+
 #include "src/core/lib/surface/server.h"
 #include "test/core/end2end/cq_verifier.h"
 
@@ -28,8 +30,8 @@
   "\x00\x00\x00\x04\x00\x00\x00\x00\x00" /* settings frame */
 
 static void verifier(grpc_server* server, grpc_completion_queue* cq,
-                     void* registered_method) {
-  while (grpc_server_has_open_connections(server)) {
+                     void* /*registered_method*/) {
+  while (server->core_server->HasOpenConnections()) {
     GPR_ASSERT(grpc_completion_queue_next(
                    cq, grpc_timeout_milliseconds_to_deadline(20), nullptr)
                    .type == GRPC_QUEUE_TIMEOUT);
@@ -37,7 +39,8 @@ static void verifier(grpc_server* server, grpc_completion_queue* cq,
 }
 
 int main(int argc, char** argv) {
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(argc, argv);
+  grpc_init();
 
   /* invalid content type */
   GRPC_RUN_BAD_CLIENT_TEST(
@@ -126,5 +129,6 @@ int main(int argc, char** argv) {
       "\x10\x0auser-agent\"bad-client grpc-c/0.12.0.0 (linux)",
       GRPC_BAD_CLIENT_DISCONNECT);
 
+  grpc_shutdown();
   return 0;
 }

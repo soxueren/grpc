@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <grpc/grpc.h>
 #include <grpc/support/alloc.h>
 
 #include "src/core/lib/http/parser.h"
@@ -29,7 +30,8 @@ bool leak_check = true;
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   grpc_http_parser parser;
   grpc_http_response response;
-  memset(&response, 0, sizeof(response));
+  grpc_init();
+  response = {};
   grpc_http_parser_init(&parser, GRPC_HTTP_RESPONSE, &response);
   grpc_slice slice = grpc_slice_from_copied_buffer((const char*)data, size);
   GRPC_ERROR_UNREF(grpc_http_parser_parse(&parser, slice, nullptr));
@@ -37,5 +39,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   grpc_slice_unref(slice);
   grpc_http_parser_destroy(&parser);
   grpc_http_response_destroy(&response);
+  grpc_shutdown();
   return 0;
 }

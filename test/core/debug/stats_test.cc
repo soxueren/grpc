@@ -26,6 +26,8 @@
 #include <grpc/support/log.h>
 #include <gtest/gtest.h>
 
+#include "test/core/util/test_config.h"
+
 namespace grpc {
 namespace testing {
 
@@ -47,24 +49,22 @@ class Snapshot {
 
 TEST(StatsTest, IncCounters) {
   for (int i = 0; i < GRPC_STATS_COUNTER_COUNT; i++) {
-    Snapshot snapshot;
+    std::unique_ptr<Snapshot> snapshot(new Snapshot);
 
-    grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-    GRPC_STATS_INC_COUNTER(&exec_ctx, (grpc_stats_counters)i);
-    grpc_exec_ctx_finish(&exec_ctx);
+    grpc_core::ExecCtx exec_ctx;
+    GRPC_STATS_INC_COUNTER((grpc_stats_counters)i);
 
-    EXPECT_EQ(snapshot.delta().counters[i], 1);
+    EXPECT_EQ(snapshot->delta().counters[i], 1);
   }
 }
 
 TEST(StatsTest, IncSpecificCounter) {
-  Snapshot snapshot;
+  std::unique_ptr<Snapshot> snapshot(new Snapshot);
 
-  grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-  GRPC_STATS_INC_SYSCALL_POLL(&exec_ctx);
-  grpc_exec_ctx_finish(&exec_ctx);
+  grpc_core::ExecCtx exec_ctx;
+  GRPC_STATS_INC_SYSCALL_POLL();
 
-  EXPECT_EQ(snapshot.delta().counters[GRPC_STATS_COUNTER_SYSCALL_POLL], 1);
+  EXPECT_EQ(snapshot->delta().counters[GRPC_STATS_COUNTER_SYSCALL_POLL], 1);
 }
 
 static int FindExpectedBucket(int i, int j) {
@@ -92,13 +92,12 @@ TEST_P(HistogramTest, IncHistogram) {
     gpr_log(GPR_DEBUG, "expected_bucket:%d nvalues=%" PRIdPTR, expected_bucket,
             test_values.size());
     for (auto j : test_values) {
-      Snapshot snapshot;
+      std::unique_ptr<Snapshot> snapshot(new Snapshot);
 
-      grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-      grpc_stats_inc_histogram[kHistogram](&exec_ctx, j);
-      grpc_exec_ctx_finish(&exec_ctx);
+      grpc_core::ExecCtx exec_ctx;
+      grpc_stats_inc_histogram[kHistogram](j);
 
-      auto delta = snapshot.delta();
+      auto delta = snapshot->delta();
 
       EXPECT_EQ(
           delta
@@ -138,16 +137,26 @@ TEST_P(HistogramTest, IncHistogram) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(HistogramTestCases, HistogramTest,
-                        ::testing::Range<int>(0, GRPC_STATS_HISTOGRAM_COUNT));
+INSTANTIATE_TEST_SUITE_P(HistogramTestCases, HistogramTest,
+                         ::testing::Range<int>(0, GRPC_STATS_HISTOGRAM_COUNT));
 
 }  // namespace testing
 }  // namespace grpc
 
 int main(int argc, char** argv) {
+/* Only run this test if GRPC_COLLECT_STATS is defined or if it is a debug
+ * build.
+ */
+#if defined(GRPC_COLLECT_STATS) || !defined(NDEBUG)
+  grpc::testing::TestEnvironment env(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
   grpc_init();
   int ret = RUN_ALL_TESTS();
   grpc_shutdown();
   return ret;
+#else
+  // Avoid unused parameter warning for conditional parameters.
+  (void)argc;
+  (void)argv;
+#endif
 }

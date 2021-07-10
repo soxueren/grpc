@@ -24,75 +24,74 @@
 
 #include "src/core/ext/filters/client_channel/resolver_registry.h"
 #include "src/core/lib/channel/channel_args.h"
-#include "src/core/lib/iomgr/combiner.h"
+#include "src/core/lib/iomgr/work_serializer.h"
 
 #include "test/core/util/test_config.h"
 
-static grpc_combiner* g_combiner;
+static std::shared_ptr<grpc_core::WorkSerializer>* g_work_serializer;
 
-typedef struct on_resolution_arg {
-  char* expected_server_name;
-  grpc_channel_args* resolver_result;
-} on_resolution_arg;
+class ResultHandler : public grpc_core::Resolver::ResultHandler {
+ public:
+  void ReturnResult(grpc_core::Resolver::Result /*result*/) override {}
 
-void on_resolution_cb(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
-  on_resolution_arg* res = static_cast<on_resolution_arg*>(arg);
-  grpc_channel_args_destroy(exec_ctx, res->resolver_result);
-}
+  void ReturnError(grpc_error_handle error) override {
+    GRPC_ERROR_UNREF(error);
+  }
+};
 
-static void test_succeeds(grpc_resolver_factory* factory, const char* string) {
-  grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-  grpc_uri* uri = grpc_uri_parse(&exec_ctx, string, 0);
-  grpc_resolver_args args;
-  grpc_resolver* resolver;
+static void test_succeeds(grpc_core::ResolverFactory* factory,
+                          const char* string) {
   gpr_log(GPR_DEBUG, "test: '%s' should be valid for '%s'", string,
-          factory->vtable->scheme);
-  GPR_ASSERT(uri);
-  memset(&args, 0, sizeof(args));
-  args.uri = uri;
-  args.combiner = g_combiner;
-  resolver = grpc_resolver_factory_create_resolver(&exec_ctx, factory, &args);
+          factory->scheme());
+  grpc_core::ExecCtx exec_ctx;
+  absl::StatusOr<grpc_core::URI> uri = grpc_core::URI::Parse(string);
+  if (!uri.ok()) {
+    gpr_log(GPR_ERROR, "%s", uri.status().ToString().c_str());
+    GPR_ASSERT(uri.ok());
+  }
+  grpc_core::ResolverArgs args;
+  args.uri = std::move(*uri);
+  args.work_serializer = *g_work_serializer;
+  args.result_handler = absl::make_unique<ResultHandler>();
+  grpc_core::OrphanablePtr<grpc_core::Resolver> resolver =
+      factory->CreateResolver(std::move(args));
   GPR_ASSERT(resolver != nullptr);
-
-  on_resolution_arg on_res_arg;
-  memset(&on_res_arg, 0, sizeof(on_res_arg));
-  on_res_arg.expected_server_name = uri->path;
-  grpc_closure* on_resolution = GRPC_CLOSURE_CREATE(
-      on_resolution_cb, &on_res_arg, grpc_schedule_on_exec_ctx);
-
-  grpc_resolver_next_locked(&exec_ctx, resolver, &on_res_arg.resolver_result,
-                            on_resolution);
-  GRPC_RESOLVER_UNREF(&exec_ctx, resolver, "test_succeeds");
-  grpc_exec_ctx_finish(&exec_ctx);
-  grpc_uri_destroy(uri);
+  resolver->StartLocked();
+  /* Flush ExecCtx to avoid stack-use-after-scope on on_res_arg which is
+   * accessed in the closure on_resolution_cb */
+  grpc_core::ExecCtx::Get()->Flush();
 }
 
-static void test_fails(grpc_resolver_factory* factory, const char* string) {
-  grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-  grpc_uri* uri = grpc_uri_parse(&exec_ctx, string, 0);
-  grpc_resolver_args args;
-  grpc_resolver* resolver;
+static void test_fails(grpc_core::ResolverFactory* factory,
+                       const char* string) {
   gpr_log(GPR_DEBUG, "test: '%s' should be invalid for '%s'", string,
-          factory->vtable->scheme);
-  GPR_ASSERT(uri);
-  memset(&args, 0, sizeof(args));
-  args.uri = uri;
-  args.combiner = g_combiner;
-  resolver = grpc_resolver_factory_create_resolver(&exec_ctx, factory, &args);
+          factory->scheme());
+  grpc_core::ExecCtx exec_ctx;
+  absl::StatusOr<grpc_core::URI> uri = grpc_core::URI::Parse(string);
+  if (!uri.ok()) {
+    gpr_log(GPR_ERROR, "%s", uri.status().ToString().c_str());
+    GPR_ASSERT(uri.ok());
+  }
+  grpc_core::ResolverArgs args;
+  args.uri = std::move(*uri);
+  args.work_serializer = *g_work_serializer;
+  args.result_handler = absl::make_unique<ResultHandler>();
+  grpc_core::OrphanablePtr<grpc_core::Resolver> resolver =
+      factory->CreateResolver(std::move(args));
   GPR_ASSERT(resolver == nullptr);
-  grpc_uri_destroy(uri);
-  grpc_exec_ctx_finish(&exec_ctx);
 }
 
 int main(int argc, char** argv) {
-  grpc_resolver_factory *ipv4, *ipv6;
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(argc, argv);
   grpc_init();
 
-  g_combiner = grpc_combiner_create();
+  auto work_serializer = std::make_shared<grpc_core::WorkSerializer>();
+  g_work_serializer = &work_serializer;
 
-  ipv4 = grpc_resolver_factory_lookup("ipv4");
-  ipv6 = grpc_resolver_factory_lookup("ipv6");
+  grpc_core::ResolverFactory* ipv4 =
+      grpc_core::ResolverRegistry::LookupResolverFactory("ipv4");
+  grpc_core::ResolverFactory* ipv6 =
+      grpc_core::ResolverRegistry::LookupResolverFactory("ipv6");
 
   test_fails(ipv4, "ipv4:10.2.1.1");
   test_succeeds(ipv4, "ipv4:10.2.1.1:1234");
@@ -108,14 +107,16 @@ int main(int argc, char** argv) {
   test_fails(ipv6, "ipv6:[::]:123456");
   test_fails(ipv6, "ipv6:www.google.com");
 
-  grpc_resolver_factory_unref(ipv4);
-  grpc_resolver_factory_unref(ipv6);
+#ifdef GRPC_HAVE_UNIX_SOCKET
+  grpc_core::ResolverFactory* uds =
+      grpc_core::ResolverRegistry::LookupResolverFactory("unix");
+  grpc_core::ResolverFactory* uds_abstract =
+      grpc_core::ResolverRegistry::LookupResolverFactory("unix-abstract");
 
-  {
-    grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-    GRPC_COMBINER_UNREF(&exec_ctx, g_combiner, "test");
-    grpc_exec_ctx_finish(&exec_ctx);
-  }
+  test_succeeds(uds, "unix:///tmp/sockaddr_resolver_test");
+  test_succeeds(uds_abstract, "unix-abstract:sockaddr_resolver_test");
+#endif  // GRPC_HAVE_UNIX_SOCKET
+
   grpc_shutdown();
 
   return 0;

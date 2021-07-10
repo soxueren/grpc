@@ -16,6 +16,8 @@
  *
  */
 
+#include <grpc/support/port_platform.h>
+
 #include "src/core/lib/iomgr/port.h"
 
 #ifdef GRPC_WINSOCK_SOCKET
@@ -25,6 +27,10 @@
 #include <inttypes.h>
 #include <io.h>
 
+#include <vector>
+
+#include "absl/strings/str_cat.h"
+
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 #include <grpc/support/log_windows.h>
@@ -32,14 +38,15 @@
 #include <grpc/support/sync.h>
 #include <grpc/support/time.h>
 
+#include "src/core/lib/address_utils/sockaddr_utils.h"
 #include "src/core/lib/channel/channel_args.h"
 #include "src/core/lib/iomgr/iocp_windows.h"
 #include "src/core/lib/iomgr/pollset_windows.h"
 #include "src/core/lib/iomgr/resolve_address.h"
-#include "src/core/lib/iomgr/sockaddr_utils.h"
 #include "src/core/lib/iomgr/socket_windows.h"
 #include "src/core/lib/iomgr/tcp_server.h"
 #include "src/core/lib/iomgr/tcp_windows.h"
+#include "src/core/lib/slice/slice_internal.h"
 
 #define MIN_SAFE_ACCEPT_QUEUE_SIZE 100
 
@@ -48,7 +55,7 @@ typedef struct grpc_tcp_listener grpc_tcp_listener;
 struct grpc_tcp_listener {
   /* This seemingly magic number comes from AcceptEx's documentation. each
      address buffer needs to have at least 16 more bytes at their end. */
-  uint8_t addresses[(sizeof(struct sockaddr_in6) + 16) * 2];
+  uint8_t addresses[(sizeof(grpc_sockaddr_in6) + 16) * 2];
   /* This will hold the socket for the next accept. */
   SOCKET new_socket;
   /* The listener winsocket. */
@@ -94,10 +101,9 @@ struct grpc_tcp_server {
 
 /* Public function. Allocates the proper data structures to hold a
    grpc_tcp_server. */
-grpc_error* grpc_tcp_server_create(grpc_exec_ctx* exec_ctx,
-                                   grpc_closure* shutdown_complete,
-                                   const grpc_channel_args* args,
-                                   grpc_tcp_server** server) {
+static grpc_error_handle tcp_server_create(grpc_closure* shutdown_complete,
+                                           const grpc_channel_args* args,
+                                           grpc_tcp_server** server) {
   grpc_tcp_server* s = (grpc_tcp_server*)gpr_malloc(sizeof(grpc_tcp_server));
   s->channel_args = grpc_channel_args_copy(args);
   gpr_ref_init(&s->refs, 1);
@@ -114,8 +120,7 @@ grpc_error* grpc_tcp_server_create(grpc_exec_ctx* exec_ctx,
   return GRPC_ERROR_NONE;
 }
 
-static void destroy_server(grpc_exec_ctx* exec_ctx, void* arg,
-                           grpc_error* error) {
+static void destroy_server(void* arg, grpc_error_handle error) {
   grpc_tcp_server* s = (grpc_tcp_server*)arg;
 
   /* Now that the accepts have been aborted, we can destroy the sockets.
@@ -128,43 +133,44 @@ static void destroy_server(grpc_exec_ctx* exec_ctx, void* arg,
     grpc_winsocket_destroy(sp->socket);
     gpr_free(sp);
   }
-  grpc_channel_args_destroy(exec_ctx, s->channel_args);
+  grpc_channel_args_destroy(s->channel_args);
+  gpr_mu_destroy(&s->mu);
   gpr_free(s);
 }
 
-static void finish_shutdown_locked(grpc_exec_ctx* exec_ctx,
-                                   grpc_tcp_server* s) {
+static void finish_shutdown_locked(grpc_tcp_server* s) {
   if (s->shutdown_complete != NULL) {
-    GRPC_CLOSURE_SCHED(exec_ctx, s->shutdown_complete, GRPC_ERROR_NONE);
+    grpc_core::ExecCtx::Run(DEBUG_LOCATION, s->shutdown_complete,
+                            GRPC_ERROR_NONE);
   }
 
-  GRPC_CLOSURE_SCHED(
-      exec_ctx,
+  grpc_core::ExecCtx::Run(
+      DEBUG_LOCATION,
       GRPC_CLOSURE_CREATE(destroy_server, s, grpc_schedule_on_exec_ctx),
       GRPC_ERROR_NONE);
 }
 
-grpc_tcp_server* grpc_tcp_server_ref(grpc_tcp_server* s) {
+static grpc_tcp_server* tcp_server_ref(grpc_tcp_server* s) {
   gpr_ref_non_zero(&s->refs);
   return s;
 }
 
-void grpc_tcp_server_shutdown_starting_add(grpc_tcp_server* s,
-                                           grpc_closure* shutdown_starting) {
+static void tcp_server_shutdown_starting_add(grpc_tcp_server* s,
+                                             grpc_closure* shutdown_starting) {
   gpr_mu_lock(&s->mu);
   grpc_closure_list_append(&s->shutdown_starting, shutdown_starting,
                            GRPC_ERROR_NONE);
   gpr_mu_unlock(&s->mu);
 }
 
-static void tcp_server_destroy(grpc_exec_ctx* exec_ctx, grpc_tcp_server* s) {
+static void tcp_server_destroy(grpc_tcp_server* s) {
   grpc_tcp_listener* sp;
   gpr_mu_lock(&s->mu);
 
   /* First, shutdown all fd's. This will queue abortion calls for all
      of the pending accepts due to the normal operation mechanism. */
   if (s->active_ports == 0) {
-    finish_shutdown_locked(exec_ctx, s);
+    finish_shutdown_locked(s);
   } else {
     for (sp = s->head; sp; sp = sp->next) {
       sp->shutting_down = 1;
@@ -174,22 +180,22 @@ static void tcp_server_destroy(grpc_exec_ctx* exec_ctx, grpc_tcp_server* s) {
   gpr_mu_unlock(&s->mu);
 }
 
-void grpc_tcp_server_unref(grpc_exec_ctx* exec_ctx, grpc_tcp_server* s) {
+static void tcp_server_unref(grpc_tcp_server* s) {
   if (gpr_unref(&s->refs)) {
-    grpc_tcp_server_shutdown_listeners(exec_ctx, s);
+    grpc_tcp_server_shutdown_listeners(s);
     gpr_mu_lock(&s->mu);
-    GRPC_CLOSURE_LIST_SCHED(exec_ctx, &s->shutdown_starting);
+    grpc_core::ExecCtx::RunList(DEBUG_LOCATION, &s->shutdown_starting);
     gpr_mu_unlock(&s->mu);
-    tcp_server_destroy(exec_ctx, s);
+    tcp_server_destroy(s);
   }
 }
 
 /* Prepare (bind) a recently-created socket for listening. */
-static grpc_error* prepare_socket(SOCKET sock,
-                                  const grpc_resolved_address* addr,
-                                  int* port) {
+static grpc_error_handle prepare_socket(SOCKET sock,
+                                        const grpc_resolved_address* addr,
+                                        int* port) {
   grpc_resolved_address sockname_temp;
-  grpc_error* error = GRPC_ERROR_NONE;
+  grpc_error_handle error = GRPC_ERROR_NONE;
   int sockname_temp_len;
 
   error = grpc_tcp_prepare_socket(sock);
@@ -197,7 +203,7 @@ static grpc_error* prepare_socket(SOCKET sock,
     goto failure;
   }
 
-  if (bind(sock, (const struct sockaddr*)addr->addr, (int)addr->len) ==
+  if (bind(sock, (const grpc_sockaddr*)addr->addr, (int)addr->len) ==
       SOCKET_ERROR) {
     error = GRPC_WSA_ERROR(WSAGetLastError(), "bind");
     goto failure;
@@ -209,7 +215,7 @@ static grpc_error* prepare_socket(SOCKET sock,
   }
 
   sockname_temp_len = sizeof(struct sockaddr_storage);
-  if (getsockname(sock, (struct sockaddr*)sockname_temp.addr,
+  if (getsockname(sock, (grpc_sockaddr*)sockname_temp.addr,
                   &sockname_temp_len) == SOCKET_ERROR) {
     error = GRPC_WSA_ERROR(WSAGetLastError(), "getsockname");
     goto failure;
@@ -221,44 +227,41 @@ static grpc_error* prepare_socket(SOCKET sock,
 
 failure:
   GPR_ASSERT(error != GRPC_ERROR_NONE);
-  char* tgtaddr = grpc_sockaddr_to_uri(addr);
   grpc_error_set_int(
-      grpc_error_set_str(GRPC_ERROR_CREATE_REFERENCING_FROM_STATIC_STRING(
-                             "Failed to prepare server socket", &error, 1),
-                         GRPC_ERROR_STR_TARGET_ADDRESS,
-                         grpc_slice_from_copied_string(tgtaddr)),
+      grpc_error_set_str(
+          GRPC_ERROR_CREATE_REFERENCING_FROM_STATIC_STRING(
+              "Failed to prepare server socket", &error, 1),
+          GRPC_ERROR_STR_TARGET_ADDRESS,
+          grpc_slice_from_cpp_string(grpc_sockaddr_to_uri(addr))),
       GRPC_ERROR_INT_FD, (intptr_t)sock);
-  gpr_free(tgtaddr);
   GRPC_ERROR_UNREF(error);
   if (sock != INVALID_SOCKET) closesocket(sock);
   return error;
 }
 
-static void decrement_active_ports_and_notify_locked(grpc_exec_ctx* exec_ctx,
-                                                     grpc_tcp_listener* sp) {
+static void decrement_active_ports_and_notify_locked(grpc_tcp_listener* sp) {
   sp->shutting_down = 0;
   GPR_ASSERT(sp->server->active_ports > 0);
   if (0 == --sp->server->active_ports) {
-    finish_shutdown_locked(exec_ctx, sp->server);
+    finish_shutdown_locked(sp->server);
   }
 }
 
 /* In order to do an async accept, we need to create a socket first which
    will be the one assigned to the new incoming connection. */
-static grpc_error* start_accept_locked(grpc_exec_ctx* exec_ctx,
-                                       grpc_tcp_listener* port) {
+static grpc_error_handle start_accept_locked(grpc_tcp_listener* port) {
   SOCKET sock = INVALID_SOCKET;
   BOOL success;
-  DWORD addrlen = sizeof(struct sockaddr_in6) + 16;
+  DWORD addrlen = sizeof(grpc_sockaddr_in6) + 16;
   DWORD bytes_received = 0;
-  grpc_error* error = GRPC_ERROR_NONE;
+  grpc_error_handle error = GRPC_ERROR_NONE;
 
   if (port->shutting_down) {
     return GRPC_ERROR_NONE;
   }
 
   sock = WSASocket(AF_INET6, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
-                   WSA_FLAG_OVERLAPPED);
+                   grpc_get_default_wsa_socket_flags());
   if (sock == INVALID_SOCKET) {
     error = GRPC_WSA_ERROR(WSAGetLastError(), "WSASocket");
     goto failure;
@@ -285,7 +288,7 @@ static grpc_error* start_accept_locked(grpc_exec_ctx* exec_ctx,
   /* We're ready to do the accept. Calling grpc_socket_notify_on_read may
      immediately process an accept that happened in the meantime. */
   port->new_socket = sock;
-  grpc_socket_notify_on_read(exec_ctx, port->socket, &port->on_accept);
+  grpc_socket_notify_on_read(port->socket, &port->on_accept);
   port->outstanding_calls++;
   return error;
 
@@ -296,14 +299,12 @@ failure:
 }
 
 /* Event manager callback when reads are ready. */
-static void on_accept(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
+static void on_accept(void* arg, grpc_error_handle error) {
   grpc_tcp_listener* sp = (grpc_tcp_listener*)arg;
   SOCKET sock = sp->new_socket;
   grpc_winsocket_callback_info* info = &sp->socket->read_info;
   grpc_endpoint* ep = NULL;
   grpc_resolved_address peer_name;
-  char* peer_name_string;
-  char* fd_name;
   DWORD transfered_bytes;
   DWORD flags;
   BOOL wsa_success;
@@ -317,8 +318,8 @@ static void on_accept(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
      this is necessary in the read/write case, it's useless for the accept
      case. We only need to adjust the pending callback count */
   if (error != GRPC_ERROR_NONE) {
-    const char* msg = grpc_error_string(error);
-    gpr_log(GPR_INFO, "Skipping on_accept due to error: %s", msg);
+    gpr_log(GPR_INFO, "Skipping on_accept due to error: %s",
+            grpc_error_std_string(error).c_str());
 
     gpr_mu_unlock(&sp->server->mu);
     return;
@@ -338,7 +339,6 @@ static void on_accept(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
     closesocket(sock);
   } else {
     if (!sp->shutting_down) {
-      peer_name_string = NULL;
       err = setsockopt(sock, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
                        (char*)&sp->socket->socket, sizeof(sp->socket->socket));
       if (err) {
@@ -347,8 +347,9 @@ static void on_accept(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
         gpr_free(utf8_message);
       }
       int peer_name_len = (int)peer_name.len;
-      err = getpeername(sock, (struct sockaddr*)peer_name.addr, &peer_name_len);
+      err = getpeername(sock, (grpc_sockaddr*)peer_name.addr, &peer_name_len);
       peer_name.len = (size_t)peer_name_len;
+      std::string peer_name_string;
       if (!err) {
         peer_name_string = grpc_sockaddr_to_uri(&peer_name);
       } else {
@@ -356,11 +357,9 @@ static void on_accept(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
         gpr_log(GPR_ERROR, "getpeername error: %s", utf8_message);
         gpr_free(utf8_message);
       }
-      gpr_asprintf(&fd_name, "tcp_server:%s", peer_name_string);
-      ep = grpc_tcp_create(exec_ctx, grpc_winsocket_create(sock, fd_name),
-                           sp->server->channel_args, peer_name_string);
-      gpr_free(fd_name);
-      gpr_free(peer_name_string);
+      std::string fd_name = absl::StrCat("tcp_server:", peer_name_string);
+      ep = grpc_tcp_create(grpc_winsocket_create(sock, fd_name.c_str()),
+                           sp->server->channel_args, peer_name_string.c_str());
     } else {
       closesocket(sock);
     }
@@ -375,32 +374,31 @@ static void on_accept(grpc_exec_ctx* exec_ctx, void* arg, grpc_error* error) {
     acceptor->from_server = sp->server;
     acceptor->port_index = sp->port_index;
     acceptor->fd_index = 0;
-    sp->server->on_accept_cb(exec_ctx, sp->server->on_accept_cb_arg, ep, NULL,
-                             acceptor);
+    acceptor->external_connection = false;
+    sp->server->on_accept_cb(sp->server->on_accept_cb_arg, ep, NULL, acceptor);
   }
   /* As we were notified from the IOCP of one and exactly one accept,
      the former socked we created has now either been destroy or assigned
      to the new connection. We need to create a new one for the next
      connection. */
-  GPR_ASSERT(
-      GRPC_LOG_IF_ERROR("start_accept", start_accept_locked(exec_ctx, sp)));
+  GPR_ASSERT(GRPC_LOG_IF_ERROR("start_accept", start_accept_locked(sp)));
   if (0 == --sp->outstanding_calls) {
-    decrement_active_ports_and_notify_locked(exec_ctx, sp);
+    decrement_active_ports_and_notify_locked(sp);
   }
   gpr_mu_unlock(&sp->server->mu);
 }
 
-static grpc_error* add_socket_to_server(grpc_tcp_server* s, SOCKET sock,
-                                        const grpc_resolved_address* addr,
-                                        unsigned port_index,
-                                        grpc_tcp_listener** listener) {
+static grpc_error_handle add_socket_to_server(grpc_tcp_server* s, SOCKET sock,
+                                              const grpc_resolved_address* addr,
+                                              unsigned port_index,
+                                              grpc_tcp_listener** listener) {
   grpc_tcp_listener* sp = NULL;
   int port = -1;
   int status;
   GUID guid = WSAID_ACCEPTEX;
   DWORD ioctl_num_bytes;
   LPFN_ACCEPTEX AcceptEx;
-  grpc_error* error = GRPC_ERROR_NONE;
+  grpc_error_handle error = GRPC_ERROR_NONE;
 
   /* We need to grab the AcceptEx pointer for that port, as it may be
      interface-dependent. We'll cache it to avoid doing that again. */
@@ -413,7 +411,7 @@ static grpc_error* add_socket_to_server(grpc_tcp_server* s, SOCKET sock,
     gpr_log(GPR_ERROR, "on_connect error: %s", utf8_message);
     gpr_free(utf8_message);
     closesocket(sock);
-    return NULL;
+    return GRPC_ERROR_NONE;
   }
 
   error = prepare_socket(sock, addr, &port);
@@ -448,9 +446,9 @@ static grpc_error* add_socket_to_server(grpc_tcp_server* s, SOCKET sock,
   return GRPC_ERROR_NONE;
 }
 
-grpc_error* grpc_tcp_server_add_port(grpc_tcp_server* s,
-                                     const grpc_resolved_address* addr,
-                                     int* port) {
+static grpc_error_handle tcp_server_add_port(grpc_tcp_server* s,
+                                             const grpc_resolved_address* addr,
+                                             int* port) {
   grpc_tcp_listener* sp = NULL;
   SOCKET sock;
   grpc_resolved_address addr6_v4mapped;
@@ -458,7 +456,7 @@ grpc_error* grpc_tcp_server_add_port(grpc_tcp_server* s,
   grpc_resolved_address* allocated_addr = NULL;
   grpc_resolved_address sockname_temp;
   unsigned port_index = 0;
-  grpc_error* error = GRPC_ERROR_NONE;
+  grpc_error_handle error = GRPC_ERROR_NONE;
 
   if (s->tail != NULL) {
     port_index = s->tail->port_index + 1;
@@ -470,7 +468,7 @@ grpc_error* grpc_tcp_server_add_port(grpc_tcp_server* s,
     for (sp = s->head; sp; sp = sp->next) {
       int sockname_temp_len = sizeof(struct sockaddr_storage);
       if (0 == getsockname(sp->socket->socket,
-                           (struct sockaddr*)sockname_temp.addr,
+                           (grpc_sockaddr*)sockname_temp.addr,
                            &sockname_temp_len)) {
         sockname_temp.len = (size_t)sockname_temp_len;
         *port = grpc_sockaddr_get_port(&sockname_temp);
@@ -498,7 +496,7 @@ grpc_error* grpc_tcp_server_add_port(grpc_tcp_server* s,
   }
 
   sock = WSASocket(AF_INET6, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
-                   WSA_FLAG_OVERLAPPED);
+                   grpc_get_default_wsa_socket_flags());
   if (sock == INVALID_SOCKET) {
     error = GRPC_WSA_ERROR(WSAGetLastError(), "WSASocket");
     goto done;
@@ -510,8 +508,9 @@ done:
   gpr_free(allocated_addr);
 
   if (error != GRPC_ERROR_NONE) {
-    grpc_error* error_out = GRPC_ERROR_CREATE_REFERENCING_FROM_STATIC_STRING(
-        "Failed to add port to server", &error, 1);
+    grpc_error_handle error_out =
+        GRPC_ERROR_CREATE_REFERENCING_FROM_STATIC_STRING(
+            "Failed to add port to server", &error, 1);
     GRPC_ERROR_UNREF(error);
     error = error_out;
     *port = -1;
@@ -522,10 +521,10 @@ done:
   return error;
 }
 
-void grpc_tcp_server_start(grpc_exec_ctx* exec_ctx, grpc_tcp_server* s,
-                           grpc_pollset** pollset, size_t pollset_count,
-                           grpc_tcp_server_cb on_accept_cb,
-                           void* on_accept_cb_arg) {
+static void tcp_server_start(grpc_tcp_server* s,
+                             const std::vector<grpc_pollset*>* /*pollsets*/,
+                             grpc_tcp_server_cb on_accept_cb,
+                             void* on_accept_cb_arg) {
   grpc_tcp_listener* sp;
   GPR_ASSERT(on_accept_cb);
   gpr_mu_lock(&s->mu);
@@ -534,14 +533,33 @@ void grpc_tcp_server_start(grpc_exec_ctx* exec_ctx, grpc_tcp_server* s,
   s->on_accept_cb = on_accept_cb;
   s->on_accept_cb_arg = on_accept_cb_arg;
   for (sp = s->head; sp; sp = sp->next) {
-    GPR_ASSERT(
-        GRPC_LOG_IF_ERROR("start_accept", start_accept_locked(exec_ctx, sp)));
+    GPR_ASSERT(GRPC_LOG_IF_ERROR("start_accept", start_accept_locked(sp)));
     s->active_ports++;
   }
   gpr_mu_unlock(&s->mu);
 }
 
-void grpc_tcp_server_shutdown_listeners(grpc_exec_ctx* exec_ctx,
-                                        grpc_tcp_server* s) {}
+static unsigned tcp_server_port_fd_count(grpc_tcp_server* s,
+                                         unsigned port_index) {
+  return 0;
+}
 
+static int tcp_server_port_fd(grpc_tcp_server* s, unsigned port_index,
+                              unsigned fd_index) {
+  return -1;
+}
+
+static grpc_core::TcpServerFdHandler* tcp_server_create_fd_handler(
+    grpc_tcp_server* s) {
+  return nullptr;
+}
+
+static void tcp_server_shutdown_listeners(grpc_tcp_server* s) {}
+
+grpc_tcp_server_vtable grpc_windows_tcp_server_vtable = {
+    tcp_server_create,        tcp_server_start,
+    tcp_server_add_port,      tcp_server_create_fd_handler,
+    tcp_server_port_fd_count, tcp_server_port_fd,
+    tcp_server_ref,           tcp_server_shutdown_starting_add,
+    tcp_server_unref,         tcp_server_shutdown_listeners};
 #endif /* GRPC_WINSOCK_SOCKET */

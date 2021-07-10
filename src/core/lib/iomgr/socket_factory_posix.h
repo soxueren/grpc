@@ -19,16 +19,14 @@
 #ifndef GRPC_CORE_LIB_IOMGR_SOCKET_FACTORY_POSIX_H
 #define GRPC_CORE_LIB_IOMGR_SOCKET_FACTORY_POSIX_H
 
+#include <grpc/support/port_platform.h>
+
 #include <grpc/impl/codegen/grpc_types.h>
 #include <grpc/support/sync.h>
 #include "src/core/lib/iomgr/resolve_address.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /** The virtual table of grpc_socket_factory */
-typedef struct {
+struct grpc_socket_factory_vtable {
   /** Replacement for socket(2) */
   int (*socket)(grpc_socket_factory* factory, int domain, int type,
                 int protocol);
@@ -39,8 +37,7 @@ typedef struct {
   int (*compare)(grpc_socket_factory* a, grpc_socket_factory* b);
   /** Destroys the socket factory instance */
   void (*destroy)(grpc_socket_factory* factory);
-} grpc_socket_factory_vtable;
-
+};
 /** The Socket Factory interface allows changes on socket options */
 struct grpc_socket_factory {
   const grpc_socket_factory_vtable* vtable;
@@ -67,9 +64,5 @@ int grpc_socket_factory_compare(grpc_socket_factory* a, grpc_socket_factory* b);
 
 grpc_socket_factory* grpc_socket_factory_ref(grpc_socket_factory* factory);
 void grpc_socket_factory_unref(grpc_socket_factory* factory);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* GRPC_CORE_LIB_IOMGR_SOCKET_FACTORY_POSIX_H */

@@ -16,11 +16,11 @@
  *
  */
 
-#include <grpc/support/cmdline.h>
 #include <grpc/support/log.h>
 #include <signal.h>
 
 #include "test/core/bad_ssl/server_common.h"
+#include "test/core/util/cmdline.h"
 #include "test/core/util/test_config.h"
 
 /* Common server implementation details for all servers in servers/.
@@ -30,7 +30,7 @@
 
 static int got_sigint = 0;
 
-static void sigint_handler(int x) { got_sigint = 1; }
+static void sigint_handler(int /*x*/) { got_sigint = 1; }
 
 const char* bad_ssl_addr(int argc, char** argv) {
   gpr_cmdline* cl;
@@ -62,7 +62,8 @@ void bad_ssl_run(grpc_server* server) {
   grpc_server_start(server);
 
   error = grpc_server_request_call(server, &s, &call_details,
-                                   &request_metadata_recv, cq, cq, (void*)1);
+                                   &request_metadata_recv, cq, cq,
+                                   reinterpret_cast<void*>(1));
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   signal(SIGINT, sigint_handler);

@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM debian:jessie
+FROM debian:bullseye
 
-RUN apt-get update && apt-get -y install wget xz-utils
-RUN wget http://releases.llvm.org/5.0.0/clang+llvm-5.0.0-linux-x86_64-ubuntu14.04.tar.xz
-RUN tar xf clang+llvm-5.0.0-linux-x86_64-ubuntu14.04.tar.xz
-RUN ln -s /clang+llvm-5.0.0-linux-x86_64-ubuntu14.04/bin/clang-format /usr/local/bin/clang-format
-ENV CLANG_FORMAT=clang-format
+# Install clang-format
+RUN apt-get update && apt-get install -y clang-format-11
+ENV CLANG_FORMAT=clang-format-11
 
 ADD clang_format_all_the_things.sh /
+
+# When running locally, we'll be impersonating the current user, so we need
+# to make the script runnable by everyone.
+RUN chmod a+rx /clang_format_all_the_things.sh
+
 CMD ["echo 'Run with tools/distrib/clang_format_code.sh'"]

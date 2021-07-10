@@ -19,20 +19,20 @@
 #ifndef GRPC_CORE_LIB_IOMGR_ERROR_INTERNAL_H
 #define GRPC_CORE_LIB_IOMGR_ERROR_INTERNAL_H
 
+#include <grpc/support/port_platform.h>
+
 #include <inttypes.h>
-#include <stdbool.h>  // TODO, do we need this?
+#include <stdbool.h>  // TODO(unknown): , do we need this?
 
 #include <grpc/support/sync.h>
 #include "src/core/lib/iomgr/error.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#ifndef GRPC_ERROR_IS_ABSEIL_STATUS
 
 typedef struct grpc_linked_error grpc_linked_error;
 
 struct grpc_linked_error {
-  grpc_error* err;
+  grpc_error_handle err;
   uint8_t next;
 };
 
@@ -51,7 +51,7 @@ struct grpc_error {
   uint8_t strs[GRPC_ERROR_STR_MAX];
   uint8_t times[GRPC_ERROR_TIME_MAX];
   // The child errors are stored in the arena, but are effectively a linked list
-  // structure, since they are contained withing grpc_linked_error objects.
+  // structure, since they are contained within grpc_linked_error objects.
   uint8_t first_err;
   uint8_t last_err;
   // The arena is dynamically reallocated with a grow factor of 1.5.
@@ -60,10 +60,6 @@ struct grpc_error {
   intptr_t arena[0];
 };
 
-bool grpc_error_is_special(struct grpc_error* err);
-
-#ifdef __cplusplus
-}
-#endif
+#endif  // GRPC_ERROR_IS_ABSEIL_STATUS
 
 #endif /* GRPC_CORE_LIB_IOMGR_ERROR_INTERNAL_H */

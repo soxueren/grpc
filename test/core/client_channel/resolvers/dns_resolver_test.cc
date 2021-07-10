@@ -21,70 +21,78 @@
 #include <grpc/support/log.h>
 
 #include "src/core/ext/filters/client_channel/resolver/dns/c_ares/grpc_ares_wrapper.h"
+#include "src/core/ext/filters/client_channel/resolver/dns/dns_resolver_selection.h"
 #include "src/core/ext/filters/client_channel/resolver_registry.h"
-#include "src/core/lib/iomgr/combiner.h"
+#include "src/core/lib/gpr/string.h"
+#include "src/core/lib/gprpp/memory.h"
+#include "src/core/lib/iomgr/work_serializer.h"
 #include "test/core/util/test_config.h"
 
-static grpc_combiner* g_combiner;
+static std::shared_ptr<grpc_core::WorkSerializer>* g_work_serializer;
 
-static void test_succeeds(grpc_resolver_factory* factory, const char* string) {
-  grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-  grpc_uri* uri = grpc_uri_parse(&exec_ctx, string, 0);
-  grpc_resolver_args args;
-  grpc_resolver* resolver;
+class TestResultHandler : public grpc_core::Resolver::ResultHandler {
+  void ReturnResult(grpc_core::Resolver::Result /*result*/) override {}
+  void ReturnError(grpc_error_handle /*error*/) override {}
+};
+
+static void test_succeeds(grpc_core::ResolverFactory* factory,
+                          const char* string) {
   gpr_log(GPR_DEBUG, "test: '%s' should be valid for '%s'", string,
-          factory->vtable->scheme);
-  GPR_ASSERT(uri);
-  memset(&args, 0, sizeof(args));
-  args.uri = uri;
-  args.combiner = g_combiner;
-  resolver = grpc_resolver_factory_create_resolver(&exec_ctx, factory, &args);
+          factory->scheme());
+  grpc_core::ExecCtx exec_ctx;
+  absl::StatusOr<grpc_core::URI> uri = grpc_core::URI::Parse(string);
+  if (!uri.ok()) {
+    gpr_log(GPR_ERROR, "%s", uri.status().ToString().c_str());
+    GPR_ASSERT(uri.ok());
+  }
+  grpc_core::ResolverArgs args;
+  args.uri = std::move(*uri);
+  args.work_serializer = *g_work_serializer;
+  args.result_handler = absl::make_unique<TestResultHandler>();
+  grpc_core::OrphanablePtr<grpc_core::Resolver> resolver =
+      factory->CreateResolver(std::move(args));
   GPR_ASSERT(resolver != nullptr);
-  GRPC_RESOLVER_UNREF(&exec_ctx, resolver, "test_succeeds");
-  grpc_uri_destroy(uri);
-  grpc_exec_ctx_finish(&exec_ctx);
 }
 
-static void test_fails(grpc_resolver_factory* factory, const char* string) {
-  grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-  grpc_uri* uri = grpc_uri_parse(&exec_ctx, string, 0);
-  grpc_resolver_args args;
-  grpc_resolver* resolver;
+static void test_fails(grpc_core::ResolverFactory* factory,
+                       const char* string) {
   gpr_log(GPR_DEBUG, "test: '%s' should be invalid for '%s'", string,
-          factory->vtable->scheme);
-  GPR_ASSERT(uri);
-  memset(&args, 0, sizeof(args));
-  args.uri = uri;
-  args.combiner = g_combiner;
-  resolver = grpc_resolver_factory_create_resolver(&exec_ctx, factory, &args);
+          factory->scheme());
+  grpc_core::ExecCtx exec_ctx;
+  absl::StatusOr<grpc_core::URI> uri = grpc_core::URI::Parse(string);
+  if (!uri.ok()) {
+    gpr_log(GPR_ERROR, "%s", uri.status().ToString().c_str());
+    GPR_ASSERT(uri.ok());
+  }
+  grpc_core::ResolverArgs args;
+  args.uri = std::move(*uri);
+  args.work_serializer = *g_work_serializer;
+  args.result_handler = absl::make_unique<TestResultHandler>();
+  grpc_core::OrphanablePtr<grpc_core::Resolver> resolver =
+      factory->CreateResolver(std::move(args));
   GPR_ASSERT(resolver == nullptr);
-  grpc_uri_destroy(uri);
-  grpc_exec_ctx_finish(&exec_ctx);
 }
 
 int main(int argc, char** argv) {
-  grpc_resolver_factory* dns;
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(argc, argv);
   grpc_init();
 
-  g_combiner = grpc_combiner_create();
+  auto work_serializer = std::make_shared<grpc_core::WorkSerializer>();
+  g_work_serializer = &work_serializer;
 
-  dns = grpc_resolver_factory_lookup("dns");
+  grpc_core::ResolverFactory* dns =
+      grpc_core::ResolverRegistry::LookupResolverFactory("dns");
 
   test_succeeds(dns, "dns:10.2.1.1");
   test_succeeds(dns, "dns:10.2.1.1:1234");
-  test_succeeds(dns, "ipv4:www.google.com");
-  if (grpc_resolve_address == grpc_resolve_address_ares) {
-    test_succeeds(dns, "ipv4://8.8.8.8/8.8.8.8:8888");
+  test_succeeds(dns, "dns:www.google.com");
+  test_succeeds(dns, "dns:///www.google.com");
+  grpc_core::UniquePtr<char> resolver =
+      GPR_GLOBAL_CONFIG_GET(grpc_dns_resolver);
+  if (gpr_stricmp(resolver.get(), "native") == 0) {
+    test_fails(dns, "dns://8.8.8.8/8.8.8.8:8888");
   } else {
-    test_fails(dns, "ipv4://8.8.8.8/8.8.8.8:8888");
-  }
-
-  grpc_resolver_factory_unref(dns);
-  {
-    grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
-    GRPC_COMBINER_UNREF(&exec_ctx, g_combiner, "test");
-    grpc_exec_ctx_finish(&exec_ctx);
+    test_succeeds(dns, "dns://8.8.8.8/8.8.8.8:8888");
   }
   grpc_shutdown();
 

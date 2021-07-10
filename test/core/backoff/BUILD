@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//bazel:grpc_build_system.bzl", "grpc_cc_library", "grpc_cc_test", "grpc_cc_binary")
+load("//bazel:grpc_build_system.bzl", "grpc_cc_binary", "grpc_cc_library", "grpc_cc_test")
 
 licenses(["notice"])  # Apache v2
 
@@ -26,11 +26,14 @@ package(
 grpc_cc_test(
     name = "backoff_test",
     srcs = ["backoff_test.cc"],
+    external_deps = [
+        "gtest",
+    ],
     language = "C++",
+    uses_polling = False,
     deps = [
+        "//:gpr",
         "//:grpc",
         "//test/core/util:grpc_test_util",
-        "//:gpr",
-        "//test/core/util:gpr_test_util",
     ],
 )

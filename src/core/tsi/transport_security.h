@@ -19,20 +19,18 @@
 #ifndef GRPC_CORE_TSI_TRANSPORT_SECURITY_H
 #define GRPC_CORE_TSI_TRANSPORT_SECURITY_H
 
+#include <grpc/support/port_platform.h>
+
 #include <stdbool.h>
 
 #include "src/core/lib/debug/trace.h"
 #include "src/core/tsi/transport_security_interface.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-extern grpc_tracer_flag tsi_tracing_enabled;
+extern grpc_core::TraceFlag tsi_tracing_enabled;
 
 /* Base for tsi_frame_protector implementations.
    See transport_security_interface.h for documentation. */
-typedef struct {
+struct tsi_frame_protector_vtable {
   tsi_result (*protect)(tsi_frame_protector* self,
                         const unsigned char* unprotected_bytes,
                         size_t* unprotected_bytes_size,
@@ -48,15 +46,14 @@ typedef struct {
                           unsigned char* unprotected_bytes,
                           size_t* unprotected_bytes_size);
   void (*destroy)(tsi_frame_protector* self);
-} tsi_frame_protector_vtable;
-
+};
 struct tsi_frame_protector {
   const tsi_frame_protector_vtable* vtable;
 };
 
 /* Base for tsi_handshaker implementations.
    See transport_security_interface.h for documentation. */
-typedef struct {
+struct tsi_handshaker_vtable {
   tsi_result (*get_bytes_to_send_to_peer)(tsi_handshaker* self,
                                           unsigned char* bytes,
                                           size_t* bytes_size);
@@ -75,12 +72,13 @@ typedef struct {
                      size_t* bytes_to_send_size,
                      tsi_handshaker_result** handshaker_result,
                      tsi_handshaker_on_next_done_cb cb, void* user_data);
-} tsi_handshaker_vtable;
-
+  void (*shutdown)(tsi_handshaker* self);
+};
 struct tsi_handshaker {
   const tsi_handshaker_vtable* vtable;
   bool frame_protector_created;
   bool handshaker_result_created;
+  bool handshake_shutdown;
 };
 
 /* Base for tsi_handshaker_result implementations.
@@ -91,10 +89,10 @@ struct tsi_handshaker {
    in grpc, where we do need the exec_ctx passed through, but the API still
    needs to compile in other applications, where grpc_exec_ctx is not defined.
 */
-typedef struct {
+struct tsi_handshaker_result_vtable {
   tsi_result (*extract_peer)(const tsi_handshaker_result* self, tsi_peer* peer);
   tsi_result (*create_zero_copy_grpc_protector)(
-      void* exec_ctx, const tsi_handshaker_result* self,
+      const tsi_handshaker_result* self,
       size_t* max_output_protected_frame_size,
       tsi_zero_copy_grpc_protector** protector);
   tsi_result (*create_frame_protector)(const tsi_handshaker_result* self,
@@ -104,8 +102,7 @@ typedef struct {
                                  const unsigned char** bytes,
                                  size_t* bytes_size);
   void (*destroy)(tsi_handshaker_result* self);
-} tsi_handshaker_result_vtable;
-
+};
 struct tsi_handshaker_result {
   const tsi_handshaker_result_vtable* vtable;
 };
@@ -122,12 +119,9 @@ tsi_result tsi_construct_allocated_string_peer_property(
     const char* name, size_t value_length, tsi_peer_property* property);
 tsi_result tsi_construct_string_peer_property_from_cstring(
     const char* name, const char* value, tsi_peer_property* property);
-
+const tsi_peer_property* tsi_peer_get_property_by_name(const tsi_peer* peer,
+                                                       const char* name);
 /* Utils. */
 char* tsi_strdup(const char* src); /* Sadly, no strdup in C89. */
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* GRPC_CORE_TSI_TRANSPORT_SECURITY_H */

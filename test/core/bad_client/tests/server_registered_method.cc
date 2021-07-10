@@ -38,7 +38,7 @@
   "\x10\x02te\x08trailers"                                    \
   "\x10\x0auser-agent\"bad-client grpc-c/0.12.0.0 (linux)"
 
-static void* tag(intptr_t t) { return (void*)t; }
+static void* tag(intptr_t t) { return reinterpret_cast<void*>(t); }
 
 static void verifier_succeeds(grpc_server* server, grpc_completion_queue* cq,
                               void* registered_method) {
@@ -67,8 +67,8 @@ static void verifier_succeeds(grpc_server* server, grpc_completion_queue* cq,
 }
 
 static void verifier_fails(grpc_server* server, grpc_completion_queue* cq,
-                           void* registered_method) {
-  while (grpc_server_has_open_connections(server)) {
+                           void* /*registered_method*/) {
+  while (server->core_server->HasOpenConnections()) {
     GPR_ASSERT(grpc_completion_queue_next(
                    cq, grpc_timeout_milliseconds_to_deadline(20), nullptr)
                    .type == GRPC_QUEUE_TIMEOUT);
@@ -76,7 +76,8 @@ static void verifier_fails(grpc_server* server, grpc_completion_queue* cq,
 }
 
 int main(int argc, char** argv) {
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(argc, argv);
+  grpc_init();
 
   /* body generated with
    * tools/codegen/core/gen_server_registered_method_bad_client_test_body.py */
@@ -123,5 +124,6 @@ int main(int argc, char** argv) {
       "\x00\x00\x07\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x02\x00\x00",
       0);
 
+  grpc_shutdown();
   return 0;
 }

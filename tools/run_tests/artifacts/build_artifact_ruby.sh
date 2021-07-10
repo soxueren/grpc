@@ -14,11 +14,13 @@
 # limitations under the License.
 set -ex
 
-SYSTEM=`uname | cut -f 1 -d_`
+SYSTEM=$(uname | cut -f 1 -d_)
 
-cd $(dirname $0)/../../..
+cd "$(dirname "$0")/../../.."
 set +ex
+# shellcheck disable=SC1091
 [[ -s /etc/profile.d/rvm.sh ]] && . /etc/profile.d/rvm.sh
+# shellcheck disable=SC1090
 [[ -s "$HOME/.rvm/scripts/rvm" ]] && source "$HOME/.rvm/scripts/rvm"
 set -ex
 
@@ -35,17 +37,26 @@ if [ "$SYSTEM" == "MINGW32" ] ; then
 fi
 
 set +ex
+
+# To workaround the problem with bundler 2.1.0 and rubygems-bundler 1.4.5
+# https://github.com/bundler/bundler/issues/7488
+rvm @global
+gem uninstall rubygems-bundler
+
 rvm use default
-gem install bundler --update
+gem install bundler -v 1.17.3
 
 tools/run_tests/helper_scripts/bundle_install_wrapper.sh
 
 set -ex
 
+export DOCKERHUB_ORGANIZATION=grpctesting
 rake gem:native
 
 if [ "$SYSTEM" == "Darwin" ] ; then
-  rm `ls pkg/*.gem | grep -v darwin`
+  # TODO: consider rewriting this to pass shellcheck
+  # shellcheck disable=SC2046,SC2010
+  rm $(ls pkg/*.gem | grep -v darwin)
 fi
 
 mkdir -p "${ARTIFACTS_OUT}"

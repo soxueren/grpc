@@ -19,13 +19,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <grpc/grpc.h>
 #include <grpc/slice.h>
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 
+#include "src/core/lib/gpr/string.h"
+#include "src/core/lib/gpr/tmpfile.h"
 #include "src/core/lib/iomgr/load_file.h"
-#include "src/core/lib/support/string.h"
-#include "src/core/lib/support/tmpfile.h"
 #include "test/core/util/test_config.h"
 
 #define LOG_TEST_NAME(x) gpr_log(GPR_INFO, "%s", x)
@@ -36,7 +37,7 @@ static void test_load_empty_file(void) {
   FILE* tmp = nullptr;
   grpc_slice slice;
   grpc_slice slice_with_null_term;
-  grpc_error* error;
+  grpc_error_handle error;
   char* tmp_name;
 
   LOG_TEST_NAME("test_load_empty_file");
@@ -64,7 +65,7 @@ static void test_load_empty_file(void) {
 static void test_load_failure(void) {
   FILE* tmp = nullptr;
   grpc_slice slice;
-  grpc_error* error;
+  grpc_error_handle error;
   char* tmp_name;
 
   LOG_TEST_NAME("test_load_failure");
@@ -87,7 +88,7 @@ static void test_load_small_file(void) {
   FILE* tmp = nullptr;
   grpc_slice slice;
   grpc_slice slice_with_null_term;
-  grpc_error* error;
+  grpc_error_handle error;
   char* tmp_name;
   const char* blah = "blah";
 
@@ -119,7 +120,7 @@ static void test_load_small_file(void) {
 static void test_load_big_file(void) {
   FILE* tmp = nullptr;
   grpc_slice slice;
-  grpc_error* error;
+  grpc_error_handle error;
   char* tmp_name;
   static const size_t buffer_size = 124631;
   unsigned char* buffer = static_cast<unsigned char*>(gpr_malloc(buffer_size));
@@ -151,10 +152,12 @@ static void test_load_big_file(void) {
 }
 
 int main(int argc, char** argv) {
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(argc, argv);
+  grpc_init();
   test_load_empty_file();
   test_load_failure();
   test_load_small_file();
   test_load_big_file();
+  grpc_shutdown();
   return 0;
 }

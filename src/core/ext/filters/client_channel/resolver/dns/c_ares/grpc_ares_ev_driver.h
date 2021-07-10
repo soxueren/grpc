@@ -19,44 +19,55 @@
 #ifndef GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_DNS_C_ARES_GRPC_ARES_EV_DRIVER_H
 #define GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_DNS_C_ARES_GRPC_ARES_EV_DRIVER_H
 
+#include <grpc/support/port_platform.h>
+
 #include <ares.h>
-#include "src/core/lib/iomgr/exec_ctx.h"
 #include "src/core/lib/iomgr/pollset_set.h"
+#include "src/core/lib/iomgr/work_serializer.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace grpc_core {
 
-typedef struct grpc_ares_ev_driver grpc_ares_ev_driver;
+/* A wrapped fd that integrates with the grpc iomgr of the current platform.
+ * A GrpcPolledFd knows how to create grpc platform-specific iomgr endpoints
+ * from "ares_socket_t" sockets, and then sign up for readability/writeability
+ * with that poller, and do shutdown and destruction. */
+class GrpcPolledFd {
+ public:
+  virtual ~GrpcPolledFd() {}
+  /* Called when c-ares library is interested and there's no pending callback */
+  virtual void RegisterForOnReadableLocked(grpc_closure* read_closure) = 0;
+  /* Called when c-ares library is interested and there's no pending callback */
+  virtual void RegisterForOnWriteableLocked(grpc_closure* write_closure) = 0;
+  /* Indicates if there is data left even after just being read from */
+  virtual bool IsFdStillReadableLocked() = 0;
+  /* Called once and only once. Must cause cancellation of any pending
+   * read/write callbacks. */
+  virtual void ShutdownLocked(grpc_error_handle error) = 0;
+  /* Get the underlying ares_socket_t that this was created from */
+  virtual ares_socket_t GetWrappedAresSocketLocked() = 0;
+  /* A unique name, for logging */
+  virtual const char* GetName() = 0;
+};
 
-/* Start \a ev_driver. It will keep working until all IO on its ares_channel is
-   done, or grpc_ares_ev_driver_destroy() is called. It may notify the callbacks
-   bound to its ares_channel when necessary. */
-void grpc_ares_ev_driver_start(grpc_exec_ctx* exec_ctx,
-                               grpc_ares_ev_driver* ev_driver);
+/* A GrpcPolledFdFactory is 1-to-1 with and owned by the
+ * ares event driver. It knows how to create GrpcPolledFd's
+ * for the current platform, and the ares driver uses it for all of
+ * its fd's. */
+class GrpcPolledFdFactory {
+ public:
+  virtual ~GrpcPolledFdFactory() {}
+  /* Creates a new wrapped fd for the current platform */
+  virtual GrpcPolledFd* NewGrpcPolledFdLocked(
+      ares_socket_t as, grpc_pollset_set* driver_pollset_set,
+      std::shared_ptr<grpc_core::WorkSerializer> work_serializer) = 0;
+  /* Optionally configures the ares channel after creation */
+  virtual void ConfigureAresChannelLocked(ares_channel channel) = 0;
+};
 
-/* Returns the ares_channel owned by \a ev_driver. To bind a c-ares query to
-   \a ev_driver, use the ares_channel owned by \a ev_driver as the arg of the
-   query. */
-ares_channel* grpc_ares_ev_driver_get_channel(grpc_ares_ev_driver* ev_driver);
+std::unique_ptr<GrpcPolledFdFactory> NewGrpcPolledFdFactory(
+    std::shared_ptr<grpc_core::WorkSerializer> work_serializer);
 
-/* Creates a new grpc_ares_ev_driver. Returns GRPC_ERROR_NONE if \a ev_driver is
-   created successfully. */
-grpc_error* grpc_ares_ev_driver_create(grpc_ares_ev_driver** ev_driver,
-                                       grpc_pollset_set* pollset_set);
-
-/* Destroys \a ev_driver asynchronously. Pending lookups made on \a ev_driver
-   will be cancelled and their on_done callbacks will be invoked with a status
-   of ARES_ECANCELLED. */
-void grpc_ares_ev_driver_destroy(grpc_ares_ev_driver* ev_driver);
-
-/* Shutdown all the grpc_fds used by \a ev_driver */
-void grpc_ares_ev_driver_shutdown(grpc_exec_ctx* exec_ctx,
-                                  grpc_ares_ev_driver* ev_driver);
-
-#ifdef __cplusplus
-}
-#endif
+}  // namespace grpc_core
 
 #endif /* GRPC_CORE_EXT_FILTERS_CLIENT_CHANNEL_RESOLVER_DNS_C_ARES_GRPC_ARES_EV_DRIVER_H \
         */

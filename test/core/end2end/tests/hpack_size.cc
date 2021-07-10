@@ -21,18 +21,21 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <string>
+
+#include "absl/strings/str_format.h"
+
 #include <grpc/byte_buffer.h>
 #include <grpc/grpc.h>
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
-#include <grpc/support/string_util.h>
 #include <grpc/support/time.h>
-#include <grpc/support/useful.h>
 
-#include "src/core/lib/support/string.h"
+#include "src/core/lib/gpr/string.h"
+#include "src/core/lib/gpr/useful.h"
 #include "test/core/end2end/cq_verifier.h"
 
-static void* tag(intptr_t t) { return (void*)t; }
+static void* tag(intptr_t t) { return reinterpret_cast<void*>(t); }
 
 const char* hobbits[][2] = {
     {"Adaldrida", "Brandybuck"}, {"Adamanta", "Took"},
@@ -228,7 +231,7 @@ static void end_test(grpc_end2end_test_fixture* f) {
   grpc_completion_queue_destroy(f->shutdown_cq);
 }
 
-static void simple_request_body(grpc_end2end_test_config config,
+static void simple_request_body(grpc_end2end_test_config /*config*/,
                                 grpc_end2end_test_fixture f, size_t index) {
   grpc_call* c;
   grpc_call* s;
@@ -257,11 +260,9 @@ static void simple_request_body(grpc_end2end_test_config config,
       grpc_slice_from_static_string(dragons[index % GPR_ARRAY_SIZE(dragons)]);
 
   gpr_timespec deadline = five_seconds_from_now();
-  c = grpc_channel_create_call(
-      f.client, nullptr, GRPC_PROPAGATE_DEFAULTS, f.cq,
-      grpc_slice_from_static_string("/foo"),
-      get_host_override_slice("foo.test.google.fr:1234", config), deadline,
-      nullptr);
+  c = grpc_channel_create_call(f.client, nullptr, GRPC_PROPAGATE_DEFAULTS, f.cq,
+                               grpc_slice_from_static_string("/foo"), nullptr,
+                               deadline, nullptr);
   GPR_ASSERT(c);
 
   grpc_metadata_array_init(&initial_metadata_recv);
@@ -293,7 +294,8 @@ static void simple_request_body(grpc_end2end_test_config config,
   op->flags = 0;
   op->reserved = nullptr;
   op++;
-  error = grpc_call_start_batch(c, ops, (size_t)(op - ops), tag(1), nullptr);
+  error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(1),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   error =
@@ -323,7 +325,8 @@ static void simple_request_body(grpc_end2end_test_config config,
   op->flags = 0;
   op->reserved = nullptr;
   op++;
-  error = grpc_call_start_batch(s, ops, (size_t)(op - ops), tag(102), nullptr);
+  error = grpc_call_start_batch(s, ops, static_cast<size_t>(op - ops), tag(102),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   CQ_EXPECT_COMPLETION(cqv, tag(102), 1);
@@ -333,9 +336,7 @@ static void simple_request_body(grpc_end2end_test_config config,
   GPR_ASSERT(status == GRPC_STATUS_UNIMPLEMENTED);
   GPR_ASSERT(0 == grpc_slice_str_cmp(details, "xyz"));
   GPR_ASSERT(0 == grpc_slice_str_cmp(call_details.method, "/foo"));
-  validate_host_override_string("foo.test.google.fr:1234", call_details.host,
-                                config);
-  GPR_ASSERT(was_cancelled == 1);
+  GPR_ASSERT(was_cancelled == 0);
 
   grpc_slice_unref(details);
   grpc_metadata_array_destroy(&initial_metadata_recv);
@@ -357,7 +358,6 @@ static void test_size(grpc_end2end_test_config config, int encode_size,
   grpc_channel_args server_args;
   grpc_arg client_arg;
   grpc_channel_args client_args;
-  char* name;
 
   server_arg.type = GRPC_ARG_INTEGER;
   server_arg.key = const_cast<char*>(GRPC_ARG_HTTP2_HPACK_TABLE_SIZE_DECODER);
@@ -371,15 +371,16 @@ static void test_size(grpc_end2end_test_config config, int encode_size,
   client_args.num_args = 1;
   client_args.args = &client_arg;
 
-  gpr_asprintf(&name, "test_size:e=%d:d=%d", encode_size, decode_size);
-  f = begin_test(config, name, encode_size != 4096 ? &client_args : nullptr,
+  std::string name =
+      absl::StrFormat("test_size:e=%d:d=%d", encode_size, decode_size);
+  f = begin_test(config, name.c_str(),
+                 encode_size != 4096 ? &client_args : nullptr,
                  decode_size != 4096 ? &server_args : nullptr);
   for (i = 0; i < 4 * GPR_ARRAY_SIZE(hobbits); i++) {
     simple_request_body(config, f, i);
   }
   end_test(&f);
   config.tear_down_data(&f);
-  gpr_free(name);
 }
 
 void hpack_size(grpc_end2end_test_config config) {

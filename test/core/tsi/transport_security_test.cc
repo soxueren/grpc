@@ -20,14 +20,18 @@
 
 #include <string.h>
 
+#include <string>
+
+#include "absl/strings/str_format.h"
+
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 #include <grpc/support/string_util.h>
-#include <grpc/support/useful.h>
 
 #include <openssl/crypto.h>
 
-#include "src/core/lib/support/string.h"
+#include "src/core/lib/gpr/string.h"
+#include "src/core/lib/gpr/useful.h"
 #include "src/core/tsi/fake_transport_security.h"
 #include "src/core/tsi/ssl_transport_security.h"
 #include "test/core/util/test_config.h"
@@ -291,16 +295,13 @@ static tsi_peer peer_from_cert_name_test_entry(
   return peer;
 }
 
-char* cert_name_test_entry_to_string(const cert_name_test_entry* entry) {
-  char* s;
-  gpr_asprintf(&s,
-               "{ success = %s, host_name = %s, common_name = %s, dns_names = "
-               "%s, ip_names = %s}",
-               entry->expected ? "true" : "false", entry->host_name,
-               entry->common_name,
-               entry->dns_names != nullptr ? entry->dns_names : "",
-               entry->ip_names != nullptr ? entry->ip_names : "");
-  return s;
+std::string cert_name_test_entry_to_string(const cert_name_test_entry* entry) {
+  return absl::StrFormat(
+      "{ success = %s, host_name = %s, common_name = %s, dns_names = "
+      "%s, ip_names = %s}",
+      entry->expected ? "true" : "false", entry->host_name, entry->common_name,
+      entry->dns_names != nullptr ? entry->dns_names : "",
+      entry->ip_names != nullptr ? entry->ip_names : "");
 }
 
 static void test_peer_matches_name(void) {
@@ -310,9 +311,7 @@ static void test_peer_matches_name(void) {
     tsi_peer peer = peer_from_cert_name_test_entry(entry);
     int result = tsi_ssl_peer_matches_name(&peer, entry->host_name);
     if (result != entry->expected) {
-      char* entry_str = cert_name_test_entry_to_string(entry);
-      gpr_log(GPR_ERROR, "%s", entry_str);
-      gpr_free(entry_str);
+      gpr_log(GPR_ERROR, "%s", cert_name_test_entry_to_string(entry).c_str());
       GPR_ASSERT(0); /* Unexpected result. */
     }
     tsi_peer_destruct(&peer);
@@ -381,7 +380,7 @@ static void test_handshaker_invalid_state(void) {
 }
 
 int main(int argc, char** argv) {
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(argc, argv);
   test_peer_matches_name();
   test_result_strings();
   test_protector_invalid_args();

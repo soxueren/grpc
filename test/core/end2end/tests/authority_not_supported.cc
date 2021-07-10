@@ -25,10 +25,9 @@
 #include <grpc/support/alloc.h>
 #include <grpc/support/log.h>
 #include <grpc/support/time.h>
-#include <grpc/support/useful.h>
 #include "test/core/end2end/cq_verifier.h"
 
-static void* tag(intptr_t t) { return (void*)t; }
+static void* tag(intptr_t t) { return reinterpret_cast<void*>(t); }
 
 static grpc_end2end_test_fixture begin_test(grpc_end2end_test_config config,
                                             const char* test_name,
@@ -93,11 +92,9 @@ static void test_with_authority_header(grpc_end2end_test_config config) {
       grpc_raw_byte_buffer_create(&request_payload_slice, 1);
   grpc_metadata meta_c[2] = {{grpc_slice_from_static_string("key1"),
                               grpc_slice_from_static_string("val1"),
-                              0,
                               {{nullptr, nullptr, nullptr, nullptr}}},
                              {grpc_slice_from_static_string("key2"),
                               grpc_slice_from_static_string("val2"),
-                              0,
                               {{nullptr, nullptr, nullptr, nullptr}}}};
   grpc_end2end_test_fixture f =
       begin_test(config, "test_with_authority_header", nullptr, nullptr);
@@ -155,7 +152,8 @@ static void test_with_authority_header(grpc_end2end_test_config config) {
   op->flags = 0;
   op->reserved = nullptr;
   op++;
-  error = grpc_call_start_batch(c, ops, (size_t)(op - ops), tag(1), nullptr);
+  error = grpc_call_start_batch(c, ops, static_cast<size_t>(op - ops), tag(1),
+                                nullptr);
   GPR_ASSERT(GRPC_CALL_OK == error);
 
   CQ_EXPECT_COMPLETION(cqv, tag(1), 1);
