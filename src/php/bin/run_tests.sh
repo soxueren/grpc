@@ -21,6 +21,20 @@ root=$(pwd)
 cd src/php/bin
 source ./determine_extension_dir.sh
 # in some jenkins macos machine, somehow the PHP build script can't find libgrpc.dylib
-export DYLD_LIBRARY_PATH=$root/libs/$config
-php $extension_dir -d max_execution_time=300 $(which phpunit) -v --debug \
-  ../tests/unit_tests
+export DYLD_LIBRARY_PATH=$root/libs/$CONFIG
+$(which php) $extension_dir -d max_execution_time=300 $(which phpunit) -v --debug \
+  --exclude-group persistent_list_bound_tests ../tests/unit_tests
+
+for arg in "$@"
+do
+  if [[ "$arg" == "--skip-persistent-channel-tests" ]]; then
+    SKIP_PERSISTENT_CHANNEL_TESTS=true
+  elif [[ "$arg" == "--ignore-valgrind-undef-errors" ]]; then
+    VALGRIND_UNDEF_VALUE_ERRORS="--undef-value-errors=no"
+  fi
+done
+
+if [[ "$SKIP_PERSISTENT_CHANNEL_TESTS" != "true" ]]; then
+   $(which php) $extension_dir -d max_execution_time=300 $(which phpunit) -v --debug \
+     ../tests/unit_tests/PersistentChannelTests
+fi

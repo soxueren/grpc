@@ -14,30 +14,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 set -e
 
 export TEST=true
 
-cd `dirname $0`/../../..
+cd "$(dirname "$0")/../../.."
 
-submodules=`mktemp /tmp/submXXXXXX`
-want_submodules=`mktemp /tmp/submXXXXXX`
+submodules=$(mktemp /tmp/submXXXXXX)
+want_submodules=$(mktemp /tmp/submXXXXXX)
 
-git submodule | awk '{ print $1 }' | sort > $submodules
-cat << EOF | awk '{ print $1 }' | sort > $want_submodules
- 5b7683f49e1e9223cf9927b24f6fd3d6bd82e3f8 third_party/benchmark (v1.2.0)
- be2ee342d3781ddb954f91f8a7e660c6f59e87e5 third_party/boringssl (heads/chromium-stable)
- 886e7d75368e3f4fab3f4d0d3584e4abfc557755 third_party/boringssl-with-bazel (version_for_cocoapods_7.0-857-g886e7d7)
- 30dbc81fb5ffdc98ea9b14b1918bfe4e8779b26e third_party/gflags (v2.2.0)
- ec44c6c1675c25b9827aacd08c02433cccde7780 third_party/googletest (release-1.8.0)
- 80a37e0782d2d702d52234b62dd4b9ec74fd2c95 third_party/protobuf (v3.4.0)
- cacf7f1d4e3d44d871b605da3b647f07d718623f third_party/zlib (v1.2.11)
- 3be1924221e1326df520f8498d704a5c4c8d0cce third_party/cares/cares (cares-1_13_0)
- 73594cde8c9a52a102c4341c244c833aa61b9c06 third_party/bloaty
- cc4bed2d74f7c8717e31f9579214ab52a9c9c610 third_party/abseil-cpp
+git submodule | sed 's/+//g' | awk '{ print $2 " " $1 }' | sort >"$submodules"
+cat <<EOF | sort >"$want_submodules"
+third_party/abseil-cpp 5650e9cf76d3be4318d5fa3af38ee483ddfd5e4a
+third_party/autosharding 3a21f69fe5516fe340af29ef68e327381473ecc7
+third_party/benchmark 12235e24652fc7f809373e7c11a5f73c5763fc4c
+third_party/bloaty 60209eb1ccc34d5deefb002d1b7f37545204f7f2
+third_party/boringssl-with-bazel 427ec40cc8edc545253289232e885708c409e5ea
+third_party/cares/cares d3a507e920e7af18a5efb7f9f1d8044ed4750013
+third_party/cel-c 024a0e44ed4aa1b2c7270604e0f2c3b612ac0fd9
+third_party/cel-spec 9f069b3ee58b02d6f6736c5ebd6587075c1a1b22
+third_party/envoy-api 005c18a923f166a793a1c227171398dab883cc5d
+third_party/googleapis 2193a2bfcecb92b92aad7a4d81baa428cafd7dfd
+third_party/googletest 52eb8108c5bdec04579160ae17225d66034bd723
+third_party/grpc-proto dd549fc4ed04b60b0fdd3866b82ef0a7c87c6e4f
+third_party/opencensus-proto 4aa53e15cbf1a47bc9087e6cfdca214c1eea4e89
+third_party/opentelemetry 60fa8754d890b5c55949a8c68dcfd7ab5c2395df
+third_party/opentelemetry-cpp ced79860f8c8a091a2eabfee6d47783f828a9b59
+third_party/protobuf 35cd01f9fe9afbeea38cc7b979a3b6bfcde82c03
+third_party/protoc-gen-validate 7b06248484ceeaa947e93ca2747eccf336a88ecc
+third_party/re2 0c5616df9c0aaa44c9440d87422012423d91c7d1
+third_party/xds ee656c7534f5d7dc23d44dd611689568f72017a6
+third_party/zlib f1f503da85d52e56aae11557b4d79a42bcaa2b86
 EOF
 
-diff -u $submodules $want_submodules
+if ! diff -u "$submodules" "$want_submodules"; then
+  if [ "$1" = "--fix" ]; then
+    while read -r path commit; do
+      git submodule update --init "$path"
+      (cd "$path" && git checkout "$commit")
+    done <"$want_submodules"
+    exit 0
+  fi
+  echo "Submodules are out of sync. Please update this script or run with --fix."
+  exit 1
+fi
 
-rm $submodules $want_submodules
+rm "$submodules" "$want_submodules"

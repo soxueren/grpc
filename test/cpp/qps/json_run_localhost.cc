@@ -1,20 +1,20 @@
-/*
- *
- * Copyright 2015-2016 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2015-2016 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
 #include <signal.h>
 #include <string.h>
@@ -24,11 +24,16 @@
 #include <sstream>
 #include <string>
 
-#include <grpc/support/log.h>
+#ifdef __FreeBSD__
+#include <sys/wait.h>
+#endif
 
-#include "src/core/lib/support/env.h"
-#include "test/core/util/port.h"
+#include "src/core/util/crash.h"
+#include "src/core/util/env.h"
+#include "src/core/util/grpc_check.h"
+#include "test/core/test_util/port.h"
 #include "test/cpp/util/subprocess.h"
+#include "absl/log/log.h"
 
 using grpc::SubProcess;
 
@@ -44,7 +49,7 @@ std::string as_string(const T& val) {
   return out.str();
 }
 
-static void sighandler(int sig) {
+static void sighandler(int /*sig*/) {
   const int errno_saved = errno;
   if (g_driver != nullptr) g_driver->Interrupt();
   for (int i = 0; i < kNumWorkers; ++i) {
@@ -64,13 +69,13 @@ static void register_sighandler() {
 
 static void LogStatus(int status, const char* label) {
   if (WIFEXITED(status)) {
-    gpr_log(GPR_INFO, "%s: subprocess exited with status %d", label,
-            WEXITSTATUS(status));
+    LOG(INFO) << label << ": subprocess exited with status "
+              << WEXITSTATUS(status);
   } else if (WIFSIGNALED(status)) {
-    gpr_log(GPR_INFO, "%s: subprocess terminated with signal %d", label,
-            WTERMSIG(status));
+    LOG(INFO) << label << ": subprocess terminated with signal "
+              << WTERMSIG(status);
   } else {
-    gpr_log(GPR_INFO, "%s: unknown subprocess status: %d", label, status);
+    LOG(INFO) << label << ": unknown subprocess status: " << status;
   }
 }
 
@@ -84,16 +89,20 @@ int main(int argc, char** argv) {
   bool first = true;
 
   for (int i = 0; i < kNumWorkers; i++) {
-    const auto port = grpc_pick_unused_port_or_die();
+    const auto driver_port = grpc_pick_unused_port_or_die();
+    // ServerPort can be used or not later depending on the type of worker
+    // but we like to issue all ports required here to avoid port conflict.
+    const auto server_port = grpc_pick_unused_port_or_die();
     std::vector<std::string> args = {bin_dir + "/qps_worker", "-driver_port",
-                                     as_string(port)};
+                                     as_string(driver_port), "-server_port",
+                                     as_string(server_port)};
     g_workers[i] = new SubProcess(args);
     if (!first) env << ",";
-    env << "localhost:" << port;
+    env << "localhost:" << driver_port;
     first = false;
   }
 
-  gpr_setenv("QPS_WORKERS", env.str().c_str());
+  grpc_core::SetEnv("QPS_WORKERS", env.str().c_str());
   std::vector<std::string> args = {bin_dir + "/qps_json_driver"};
   for (int i = 1; i < argc; i++) {
     args.push_back(argv[i]);
@@ -117,14 +126,13 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (g_driver != nullptr) {
-    delete g_driver;
-  }
+  delete g_driver;
+
   g_driver = nullptr;
   for (int i = 0; i < kNumWorkers; ++i) {
     if (g_workers[i] != nullptr) {
       delete g_workers[i];
     }
   }
-  GPR_ASSERT(driver_join_status == 0);
+  GRPC_CHECK_EQ(driver_join_status, 0);
 }

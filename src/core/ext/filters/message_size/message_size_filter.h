@@ -14,19 +14,94 @@
 // limitations under the License.
 //
 
-#ifndef GRPC_CORE_EXT_FILTERS_MESSAGE_SIZE_MESSAGE_SIZE_FILTER_H
-#define GRPC_CORE_EXT_FILTERS_MESSAGE_SIZE_MESSAGE_SIZE_FILTER_H
+#ifndef GRPC_SRC_CORE_EXT_FILTERS_MESSAGE_SIZE_MESSAGE_SIZE_FILTER_H
+#define GRPC_SRC_CORE_EXT_FILTERS_MESSAGE_SIZE_MESSAGE_SIZE_FILTER_H
 
-#include "src/core/lib/channel/channel_stack.h"
+#include <grpc/support/port_platform.h>
+#include <stddef.h>
+#include <stdint.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <memory>
+#include <optional>
 
-extern const grpc_channel_filter grpc_message_size_filter;
+#include "src/core/lib/channel/channel_args.h"
+#include "src/core/lib/channel/channel_fwd.h"
+#include "src/core/lib/channel/promise_based_filter.h"
+#include "src/core/transport/message_size_service_config.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 
-#ifdef __cplusplus
-}
-#endif
+namespace grpc_core {
 
-#endif /* GRPC_CORE_EXT_FILTERS_MESSAGE_SIZE_MESSAGE_SIZE_FILTER_H */
+class ServerMessageSizeFilter final
+    : public ImplementChannelFilter<ServerMessageSizeFilter> {
+ public:
+  static const grpc_channel_filter kFilter;
+
+  static absl::string_view TypeName() { return "message_size"; }
+
+  static absl::StatusOr<std::unique_ptr<ServerMessageSizeFilter>> Create(
+      const ChannelArgs& args, ChannelFilter::Args filter_args);
+
+  explicit ServerMessageSizeFilter(const ChannelArgs& args)
+      : parsed_config_(MessageSizeParsedConfig::GetFromChannelArgs(args)) {}
+
+  class Call {
+   public:
+    static inline const NoInterceptor OnClientInitialMetadata;
+    static inline const NoInterceptor OnServerInitialMetadata;
+    static inline const NoInterceptor OnServerTrailingMetadata;
+    static inline const NoInterceptor OnFinalize;
+    ServerMetadataHandle OnClientToServerMessage(
+        const Message& message, ServerMessageSizeFilter* filter);
+    static inline const NoInterceptor OnClientToServerHalfClose;
+    ServerMetadataHandle OnServerToClientMessage(
+        const Message& message, ServerMessageSizeFilter* filter);
+    channelz::PropertyList ChannelzProperties() {
+      return channelz::PropertyList();
+    }
+  };
+
+ private:
+  const MessageSizeParsedConfig parsed_config_;
+};
+
+class ClientMessageSizeFilter final
+    : public ImplementChannelFilter<ClientMessageSizeFilter> {
+ public:
+  static const grpc_channel_filter kFilter;
+
+  static absl::string_view TypeName() { return "message_size"; }
+
+  static absl::StatusOr<std::unique_ptr<ClientMessageSizeFilter>> Create(
+      const ChannelArgs& args, ChannelFilter::Args filter_args);
+
+  explicit ClientMessageSizeFilter(const ChannelArgs& args)
+      : parsed_config_(MessageSizeParsedConfig::GetFromChannelArgs(args)) {}
+
+  class Call {
+   public:
+    void OnClientInitialMetadata(ClientMetadata&,
+                                 ClientMessageSizeFilter* filter);
+    static inline const NoInterceptor OnServerInitialMetadata;
+    static inline const NoInterceptor OnServerTrailingMetadata;
+    static inline const NoInterceptor OnFinalize;
+    ServerMetadataHandle OnClientToServerMessage(const Message& message);
+    static inline const NoInterceptor OnClientToServerHalfClose;
+    ServerMetadataHandle OnServerToClientMessage(const Message& message);
+    channelz::PropertyList ChannelzProperties() {
+      return channelz::PropertyList();
+    }
+
+   private:
+    MessageSizeParsedConfig limits_;
+  };
+
+ private:
+  const size_t service_config_parser_index_{MessageSizeParser::ParserIndex()};
+  const MessageSizeParsedConfig parsed_config_;
+};
+
+}  // namespace grpc_core
+
+#endif  // GRPC_SRC_CORE_EXT_FILTERS_MESSAGE_SIZE_MESSAGE_SIZE_FILTER_H

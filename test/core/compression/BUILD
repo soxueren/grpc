@@ -12,44 +12,85 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//bazel:grpc_build_system.bzl", "grpc_cc_library", "grpc_cc_test", "grpc_cc_binary", "grpc_package")
+load(
+    "//bazel:grpc_build_system.bzl",
+    "grpc_cc_test",
+    "grpc_package",
+)
+load("//test/core/test_util:grpc_fuzzer.bzl", "grpc_fuzz_test")
 
-grpc_package(name = "test/core/compression")
-
-licenses(["notice"])  # Apache v2
-
-grpc_cc_test(
-    name = "algorithm_test",
-    srcs = ["algorithm_test.cc"],
-    language = "C++",
-    deps = [
-        "//:gpr",
-        "//:grpc",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
+grpc_package(
+    name = "test/core/compression",
+    features = [
+        "layering_check",
+        "parse_headers",
     ],
 )
+
+licenses(["notice"])
 
 grpc_cc_test(
     name = "compression_test",
     srcs = ["compression_test.cc"],
-    language = "C++",
+    external_deps = [
+        "absl/log:log",
+        "gtest",
+    ],
+    uses_event_engine = False,
+    uses_polling = False,
     deps = [
         "//:gpr",
         "//:grpc",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
+        "//src/core:channel_args",
+        "//src/core:useful",
+        "//test/core/test_util:grpc_test_util",
+    ],
+)
+
+grpc_fuzz_test(
+    name = "message_compress_fuzzer",
+    srcs = ["message_compress_fuzzer.cc"],
+    external_deps = [
+        "fuzztest",
+        "fuzztest_main",
+    ],
+    deps = [
+        "//:grpc",
+        "//:grpc_base",
+        "//test/core/test_util:grpc_test_util",
+    ],
+)
+
+grpc_fuzz_test(
+    name = "message_decompress_fuzzer",
+    srcs = ["message_decompress_fuzzer.cc"],
+    external_deps = [
+        "fuzztest",
+        "fuzztest_main",
+    ],
+    deps = [
+        "//:grpc",
+        "//:grpc_base",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
 grpc_cc_test(
     name = "message_compress_test",
     srcs = ["message_compress_test.cc"],
-    language = "C++",
+    external_deps = [
+        "absl/log:log",
+        "gtest",
+    ],
+    uses_event_engine = False,
+    uses_polling = False,
     deps = [
+        "//:exec_ctx",
         "//:gpr",
         "//:grpc",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
+        "//:grpc_base",
+        "//src/core:useful",
+        "//test/core/test_util:grpc_test_util",
+        "//test/core/test_util:grpc_test_util_base",
     ],
 )

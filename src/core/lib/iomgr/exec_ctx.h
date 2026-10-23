@@ -1,133 +1,254 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2015 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
-#ifndef GRPC_CORE_LIB_IOMGR_EXEC_CTX_H
-#define GRPC_CORE_LIB_IOMGR_EXEC_CTX_H
+#ifndef GRPC_SRC_CORE_LIB_IOMGR_EXEC_CTX_H
+#define GRPC_SRC_CORE_LIB_IOMGR_EXEC_CTX_H
 
+#include <grpc/support/port_platform.h>
+
+#include <limits>
+
+#if __APPLE__
+// Provides TARGET_OS_IPHONE
+#include <TargetConditionals.h>
+#endif
+
+#include <grpc/impl/grpc_types.h>
 #include <grpc/support/atm.h>
 #include <grpc/support/cpu.h>
+#include <grpc/support/time.h>
 
+#include "src/core/lib/experiments/experiments.h"
 #include "src/core/lib/iomgr/closure.h"
+#include "src/core/util/debug_location.h"
+#include "src/core/util/fork.h"
+#include "src/core/util/latent_see.h"
+#include "src/core/util/time.h"
+#include "src/core/util/time_precise.h"
+#include "absl/log/check.h"
 
-#ifdef __cplusplus
-extern "C" {
+#if !defined(_WIN32) || !defined(_DLL)
+#define EXEC_CTX exec_ctx_
+#define CALLBACK_EXEC_CTX callback_exec_ctx_
+#else
+#define EXEC_CTX exec_ctx()
+#define CALLBACK_EXEC_CTX callback_exec_ctx()
 #endif
 
-typedef gpr_atm grpc_millis;
-
-#define GRPC_MILLIS_INF_FUTURE GPR_ATM_MAX
-#define GRPC_MILLIS_INF_PAST GPR_ATM_MIN
-
-/** A workqueue represents a list of work to be executed asynchronously.
-    Forward declared here to avoid a circular dependency with workqueue.h. */
-typedef struct grpc_workqueue grpc_workqueue;
+/// A combiner represents a list of work to be executed later.
+/// Forward declared here to avoid a circular dependency with combiner.h.
 typedef struct grpc_combiner grpc_combiner;
 
-/* This exec_ctx is ready to return: either pre-populated, or cached as soon as
-   the finish_check returns true */
+// This exec_ctx is ready to return: either pre-populated, or cached as soon as
+// the finish_check returns true
 #define GRPC_EXEC_CTX_FLAG_IS_FINISHED 1
-/* The exec_ctx's thread is (potentially) owned by a call or channel: care
-   should be given to not delete said call/channel from this exec_ctx */
+// The exec_ctx's thread is (potentially) owned by a call or channel: care
+// should be given to not delete said call/channel from this exec_ctx
 #define GRPC_EXEC_CTX_FLAG_THREAD_RESOURCE_LOOP 2
+// This exec ctx was initialized by an internal thread, and should not
+// be counted by fork handlers
+#define GRPC_EXEC_CTX_FLAG_IS_INTERNAL_THREAD 4
 
-/** Execution context.
- *  A bag of data that collects information along a callstack.
- *  Generally created at public API entry points, and passed down as
- *  pointer to child functions that manipulate it.
- *
- *  Specific responsibilities (this may grow in the future):
- *  - track a list of work that needs to be delayed until the top of the
- *    call stack (this provides a convenient mechanism to run callbacks
- *    without worrying about locking issues)
- *  - provide a decision maker (via grpc_exec_ctx_ready_to_finish) that provides
- *    signal as to whether a borrowed thread should continue to do work or
- *    should actively try to finish up and get this thread back to its owner
- *
- *  CONVENTIONS:
- *  - Instance of this must ALWAYS be constructed on the stack, never
- *    heap allocated.
- *  - Instances and pointers to them must always be called exec_ctx.
- *  - Instances are always passed as the first argument to a function that
- *    takes it, and always as a pointer (grpc_exec_ctx is never copied).
- */
-struct grpc_exec_ctx {
-  grpc_closure_list closure_list;
-  /** currently active combiner: updated only via combiner.c */
-  grpc_combiner* active_combiner;
-  /** last active combiner in the active combiner list */
-  grpc_combiner* last_combiner;
-  uintptr_t flags;
-  unsigned starting_cpu;
-  void* check_ready_to_finish_arg;
-  bool (*check_ready_to_finish)(grpc_exec_ctx* exec_ctx, void* arg);
+// This application callback exec ctx was initialized by an internal thread, and
+// should not be counted by fork handlers
+#define GRPC_APP_CALLBACK_EXEC_CTX_FLAG_IS_INTERNAL_THREAD 1
 
-  bool now_is_valid;
-  grpc_millis now;
-};
+namespace grpc_core {
+class Combiner;
+/// Execution context.
+/// A bag of data that collects information along a callstack.
+/// It is created on the stack at core entry points (public API or iomgr), and
+/// stored internally as a thread-local variable.
+///
+/// Generally, to create an exec_ctx instance, add the following line at the top
+/// of the public API entry point or at the start of a thread's work function :
+///
+/// ExecCtx exec_ctx;
+///
+/// Access the created ExecCtx instance using :
+/// ExecCtx::Get()
+///
+/// Specific responsibilities (this may grow in the future):
+/// - track a list of core work that needs to be delayed until the base of the
+///   call stack (this provides a convenient mechanism to run callbacks
+///   without worrying about locking issues)
+/// - provide a decision maker (via IsReadyToFinish) that provides a
+///   signal as to whether a borrowed thread should continue to do work or
+///   should actively try to finish up and get this thread back to its owner
+///
+/// CONVENTIONS:
+/// - Instance of this must ALWAYS be constructed on the stack, never
+///   heap allocated.
+/// - Do not pass exec_ctx as a parameter to a function. Always access it using
+///   ExecCtx::Get().
+/// - NOTE: In the future, the convention is likely to change to allow only one
+///         ExecCtx on a thread's stack at the same time. The TODO below
+///         discusses this plan in more detail.
+///
+/// TODO(yashykt): Only allow one "active" ExecCtx on a thread at the same time.
+///               Stage 1: If a new one is created on the stack, it should just
+///               pass-through to the underlying ExecCtx deeper in the thread's
+///               stack.
+///               Stage 2: Assert if a 2nd one is ever created on the stack
+///               since that implies a core re-entry outside of application
+///               callbacks.
+///
+class GRPC_DLL ExecCtx {
+ public:
+  /// Default Constructor
 
-/* initializer for grpc_exec_ctx:
-   prefer to use GRPC_EXEC_CTX_INIT whenever possible */
-#define GRPC_EXEC_CTX_INITIALIZER(flags, finish_check, finish_check_arg) \
-  {                                                                      \
-    GRPC_CLOSURE_LIST_INIT, NULL, NULL, flags, gpr_cpu_current_cpu(),    \
-        finish_check_arg, finish_check, false, 0                         \
+  ExecCtx() : flags_(GRPC_EXEC_CTX_FLAG_IS_FINISHED) {
+    Fork::IncExecCtxCount();
+    Set(this);
   }
 
-/* initialize an execution context at the top level of an API call into grpc
-   (this is safe to use elsewhere, though possibly not as efficient) */
-#define GRPC_EXEC_CTX_INIT \
-  GRPC_EXEC_CTX_INITIALIZER(GRPC_EXEC_CTX_FLAG_IS_FINISHED, NULL, NULL)
+  /// Parameterised Constructor
+  explicit ExecCtx(uintptr_t fl) : flags_(fl) {
+    if (!(GRPC_EXEC_CTX_FLAG_IS_INTERNAL_THREAD & flags_)) {
+      Fork::IncExecCtxCount();
+    }
+    Set(this);
+  }
 
-extern grpc_closure_scheduler* grpc_schedule_on_exec_ctx;
+  /// Destructor
+  virtual ~ExecCtx() {
+    flags_ |= GRPC_EXEC_CTX_FLAG_IS_FINISHED;
+    Flush();
+    Set(last_exec_ctx_);
+    if (!(GRPC_EXEC_CTX_FLAG_IS_INTERNAL_THREAD & flags_)) {
+      Fork::DecExecCtxCount();
+    }
+  }
 
-bool grpc_exec_ctx_has_work(grpc_exec_ctx* exec_ctx);
+  /// Disallow copy and assignment operators
+  ExecCtx(const ExecCtx&) = delete;
+  ExecCtx& operator=(const ExecCtx&) = delete;
 
-/** Flush any work that has been enqueued onto this grpc_exec_ctx.
- *  Caller must guarantee that no interfering locks are held.
- *  Returns true if work was performed, false otherwise. */
-bool grpc_exec_ctx_flush(grpc_exec_ctx* exec_ctx);
-/** Finish any pending work for a grpc_exec_ctx. Must be called before
- *  the instance is destroyed, or work may be lost. */
-void grpc_exec_ctx_finish(grpc_exec_ctx* exec_ctx);
-/** Returns true if we'd like to leave this execution context as soon as
-    possible: useful for deciding whether to do something more or not depending
-    on outside context */
-bool grpc_exec_ctx_ready_to_finish(grpc_exec_ctx* exec_ctx);
-/** A finish check that is never ready to finish */
-bool grpc_never_ready_to_finish(grpc_exec_ctx* exec_ctx, void* arg_ignored);
-/** A finish check that is always ready to finish */
-bool grpc_always_ready_to_finish(grpc_exec_ctx* exec_ctx, void* arg_ignored);
+  struct CombinerData {
+    // currently active combiner: updated only via combiner.c
+    Combiner* active_combiner;
+    // last active combiner in the active combiner list
+    Combiner* last_combiner;
+  };
 
-void grpc_exec_ctx_global_init(void);
+  /// Only to be used by grpc-combiner code
+  CombinerData* combiner_data() { return &combiner_data_; }
 
-void grpc_exec_ctx_global_init(void);
-void grpc_exec_ctx_global_shutdown(void);
+  /// Return pointer to grpc_closure_list
+  grpc_closure_list* closure_list() { return &closure_list_; }
 
-grpc_millis grpc_exec_ctx_now(grpc_exec_ctx* exec_ctx);
-void grpc_exec_ctx_invalidate_now(grpc_exec_ctx* exec_ctx);
-gpr_timespec grpc_millis_to_timespec(grpc_millis millis, gpr_clock_type clock);
-grpc_millis grpc_timespec_to_millis_round_down(gpr_timespec timespec);
-grpc_millis grpc_timespec_to_millis_round_up(gpr_timespec timespec);
+  /// Return flags
+  uintptr_t flags() { return flags_; }
 
-void grpc_exec_ctx_maybe_update_start_time(grpc_exec_ctx* exec_ctx);
+  /// Checks if there is work to be done
+  bool HasWork() {
+    return combiner_data_.active_combiner != nullptr ||
+           !grpc_closure_list_empty(closure_list_);
+  }
 
-#ifdef __cplusplus
-}
+  /// Flush any work that has been enqueued onto this grpc_exec_ctx.
+  /// Caller must guarantee that no interfering locks are held.
+  /// Returns true if work was performed, false otherwise.
+  ///
+  bool Flush();
+
+  /// Returns true if we'd like to leave this execution context as soon as
+  /// possible: useful for deciding whether to do something more or not
+  /// depending on outside context.
+  ///
+  bool IsReadyToFinish() {
+    if ((flags_ & GRPC_EXEC_CTX_FLAG_IS_FINISHED) == 0) {
+      if (CheckReadyToFinish()) {
+        flags_ |= GRPC_EXEC_CTX_FLAG_IS_FINISHED;
+        return true;
+      }
+      return false;
+    } else {
+      return true;
+    }
+  }
+
+  void SetReadyToFinishFlag() { flags_ |= GRPC_EXEC_CTX_FLAG_IS_FINISHED; }
+
+  Timestamp Now() { return Timestamp::Now(); }
+
+  void InvalidateNow() {
+    if (time_cache_.has_value()) time_cache_->InvalidateCache();
+  }
+
+  void SetNowIomgrShutdown() {
+    // We get to do a test only set now on this path just because iomgr
+    // is getting removed and no point adding more interfaces for it.
+    TestOnlySetNow(Timestamp::InfFuture());
+  }
+
+  void TestOnlySetNow(Timestamp now) {
+    if (!time_cache_.has_value()) time_cache_.emplace();
+    time_cache_->TestOnlySetNow(now);
+  }
+
+  /// Gets pointer to current exec_ctx.
+  static ExecCtx* Get() { return EXEC_CTX; }
+
+  static void Run(const DebugLocation& location, grpc_closure* closure,
+                  grpc_error_handle error);
+
+  static void RunList(const DebugLocation& location, grpc_closure_list* list);
+
+ protected:
+  /// Check if ready to finish.
+  virtual bool CheckReadyToFinish() { return false; }
+
+  /// Disallow delete on ExecCtx.
+  static void operator delete(void* /* p */) { abort(); }
+
+ private:
+  /// Set EXEC_CTX to ctx.
+  static void Set(ExecCtx* ctx) { EXEC_CTX = ctx; }
+
+  grpc_closure_list closure_list_ = GRPC_CLOSURE_LIST_INIT;
+  CombinerData combiner_data_ = {nullptr, nullptr};
+  uintptr_t flags_;
+
+  std::optional<ScopedTimeCache> time_cache_;
+
+#if !defined(_WIN32) || !defined(_DLL)
+  static thread_local ExecCtx* exec_ctx_;
+#else
+  // cannot be thread_local data member (e.g. exec_ctx_) on windows
+  static ExecCtx*& exec_ctx();
 #endif
+  ExecCtx* last_exec_ctx_ = Get();
+};
 
-#endif /* GRPC_CORE_LIB_IOMGR_EXEC_CTX_H */
+template <typename F>
+void EnsureRunInExecCtx(F f) {
+  if (ExecCtx::Get() == nullptr) {
+    ExecCtx exec_ctx;
+    f();
+  } else {
+    f();
+  }
+}
+
+#undef EXEC_CTX
+#undef CALLBACK_EXEC_CTX
+
+}  // namespace grpc_core
+
+#endif  // GRPC_SRC_CORE_LIB_IOMGR_EXEC_CTX_H

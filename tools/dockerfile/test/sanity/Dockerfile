@@ -12,114 +12,114 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM debian:jessie
+FROM silkeh/clang:19-bookworm
 
-# Install Git and basic packages.
+#=================
+# Basic C core dependencies
+
+# C/C++ dependencies according to https://github.com/grpc/grpc/blob/master/BUILDING.md
 RUN apt-get update && apt-get install -y \
-  autoconf \
-  autotools-dev \
   build-essential \
-  bzip2 \
-  ccache \
-  curl \
-  dnsutils \
+  autoconf \
+  libtool \
+  pkg-config \
+  && apt-get clean
+
+# GCC
+RUN apt-get update && apt-get install -y \
   gcc \
-  gcc-multilib \
-  git \
-  golang \
-  gyp \
-  lcov \
+  g++ \
+  && apt-get clean
+
+# libc6
+RUN apt-get update && apt-get install -y \
   libc6 \
   libc6-dbg \
   libc6-dev \
-  libgtest-dev \
-  libtool \
+  && apt-get clean
+
+# Tools
+RUN apt-get update && apt-get install -y \
+  bzip2 \
+  curl \
+  dnsutils \
+  git \
+  lcov \
   make \
-  perl \
   strace \
-  python-dev \
-  python-setuptools \
-  python-yaml \
-  telnet \
+  time \
   unzip \
   wget \
-  zip && apt-get clean
-
-#================
-# Build profiling
-RUN apt-get update && apt-get install -y time && apt-get clean
-
-# Google Cloud platform API libraries
-RUN apt-get update && apt-get install -y python-pip && apt-get clean
-RUN pip install --upgrade google-api-python-client
-
-#====================
-# Python dependencies
-
-# Install dependencies
-
-RUN apt-get update && apt-get install -y \
-    python-all-dev \
-    python3-all-dev \
-    python-pip
-
-# Install Python packages from PyPI
-RUN pip install --upgrade pip==9.0.1
-RUN pip install virtualenv
-RUN pip install futures==2.2.0 enum34==1.0.4 protobuf==3.2.0 six==1.10.0 twisted==17.5.0
+  zip \
+  && apt-get clean
 
 #=================
-# C++ dependencies
-RUN apt-get update && apt-get -y install libgflags-dev libgtest-dev libc++-dev clang && apt-get clean
+# Setup git to access working directory across docker boundary.
+# This avoids the "fatal: detected dubious ownership in repository XYZ"
+# git error.
 
-#========================
-# Sanity test dependencies
-RUN apt-get update && apt-get install -y \
-      python-pip \
-      autoconf \
-      automake \
-      libtool \
-      curl \
-      python-virtualenv \
-      python-lxml
-RUN pip install simplejson mako
+RUN git config --global --add safe.directory '*'
+RUN git config --global protocol.file.allow always
 
-#======================================
-# More sanity test dependencies (bazel)
-RUN echo "deb http://http.debian.net/debian jessie-backports main" >> /etc/apt/sources.list
-RUN apt-get update
-RUN apt-get install -y -t jessie-backports openjdk-8-jdk
 
-#========================
-# Bazel installation
-RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" > /etc/apt/sources.list.d/bazel.list
-RUN curl https://bazel.build/bazel-release.pub.gpg | apt-key add -
-RUN apt-get -y update
-RUN apt-get -y install bazel
 
-# Pin Bazel to 0.4.4
-# Installing Bazel via apt-get first is required before installing 0.4.4 to
-# allow gRPC to build without errors. See https://github.com/grpc/grpc/issues/10553
-RUN curl -fSsL -O https://github.com/bazelbuild/bazel/releases/download/0.4.4/bazel-0.4.4-installer-linux-x86_64.sh
-RUN chmod +x ./bazel-0.4.4-installer-linux-x86_64.sh
-RUN ./bazel-0.4.4-installer-linux-x86_64.sh
+RUN apt update && apt install -y python3 python3-pip && apt clean
 
-RUN apt-get update && apt-get -y install wget xz-utils
-RUN wget http://releases.llvm.org/5.0.0/clang+llvm-5.0.0-linux-x86_64-ubuntu14.04.tar.xz
-RUN tar xf clang+llvm-5.0.0-linux-x86_64-ubuntu14.04.tar.xz
-RUN ln -s /clang+llvm-5.0.0-linux-x86_64-ubuntu14.04/bin/clang-format /usr/local/bin/clang-format
-ENV CLANG_FORMAT=clang-format
-
-# Prepare ccache
-RUN ln -s /usr/bin/ccache /usr/local/bin/gcc
-RUN ln -s /usr/bin/ccache /usr/local/bin/g++
-RUN ln -s /usr/bin/ccache /usr/local/bin/cc
-RUN ln -s /usr/bin/ccache /usr/local/bin/c++
-RUN ln -s /usr/bin/ccache /usr/local/bin/clang
-RUN ln -s /usr/bin/ccache /usr/local/bin/clang++
+RUN python3 -m pip install --break-system-packages --upgrade google-auth==1.23.0 google-api-python-client==1.12.8 oauth2client==4.1.0
 
 
 RUN mkdir /var/local/jenkins
+
+
+#========================
+# Sanity test dependencies
+
+# autoconf automake libtool curl shellcheck: main dependencies
+# jq git: prerequisites for the clang-tidy script
+# libgtest-dev: otherwise clang-tidy will report missing <gtest/gtest.h> header
+RUN apt install -y \
+    autoconf \
+    automake \
+    curl \
+    git\
+    jq \
+    libgtest-dev \
+    libtool \
+    python3-lxml \
+    python3-mako \
+    python3-simplejson \
+    python3-venv \
+    python3-virtualenv \
+    shellcheck \
+    && apt clean
+
+#========================
+# Bazel installation
+
+# Must be in sync with tools/bazel
+ENV BAZEL_VERSION 8.7.0
+
+# The correct bazel version is already preinstalled, no need to use //tools/bazel wrapper.
+ENV DISABLE_BAZEL_WRAPPER 1
+
+# Download the correct bazel version and make sure it's on path.
+RUN BAZEL_ARCH_SUFFIX="$(uname -m | sed s/aarch64/arm64/)" \
+  && curl -sSL --fail -o /usr/local/bin/bazel "https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-linux-$BAZEL_ARCH_SUFFIX" \
+  && chmod a+x /usr/local/bin/bazel
+
+# Normally we would run "bazel --version" here to make sure bazel
+# was correctly installed, but we can't do that because
+# of # https://github.com/bazelbuild/bazel/issues/11379.
+# We want to keep the arm64 version of the image buildable
+# on x64 with use of qemu-user-static & binfmt emulation,
+# but the self-extraction is broken for bazel currently.
+# The binary will work correctly when run on real arm64
+# hardware, when qemu-user-static isn't getting into the way.
+
+# Install buildifier v8.0.0
+RUN wget -O buildifier https://github.com/bazelbuild/buildtools/releases/download/v8.0.0/buildifier-linux-amd64
+RUN chmod +x buildifier
+RUN mv buildifier /usr/local/bin
 
 
 # Define the default command.

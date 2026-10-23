@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2016 gRPC authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Definition of targets to build artifacts."""
 
 import os.path
@@ -20,320 +19,521 @@ import random
 import string
 import sys
 
-sys.path.insert(0, os.path.abspath('..'))
+sys.path.insert(0, os.path.abspath(".."))
 import python_utils.jobset as jobset
 
+_LATEST_MANYLINUX = "manylinux2014"
 
-def create_docker_jobspec(name, dockerfile_dir, shell_command, environ={},
-                   flake_retries=0, timeout_retries=0, timeout_seconds=30*60,
-                   docker_base_image=None, extra_docker_args=None):
-  """Creates jobspec for a task running under docker."""
-  environ = environ.copy()
-  environ['RUN_COMMAND'] = shell_command
-  environ['ARTIFACTS_OUT'] = 'artifacts/%s' % name
-
-  docker_args=[]
-  for k,v in environ.items():
-    docker_args += ['-e', '%s=%s' % (k, v)]
-  docker_env = {'DOCKERFILE_DIR': dockerfile_dir,
-                'DOCKER_RUN_SCRIPT': 'tools/run_tests/dockerize/docker_run.sh',
-                'OUTPUT_DIR': 'artifacts'}
-
-  if docker_base_image is not None:
-    docker_env['DOCKER_BASE_IMAGE'] = docker_base_image
-  if extra_docker_args is not None:
-    docker_env['EXTRA_DOCKER_ARGS'] = extra_docker_args
-  jobspec = jobset.JobSpec(
-          cmdline=['tools/run_tests/dockerize/build_and_run_docker.sh'] + docker_args,
-          environ=docker_env,
-          shortname='build_artifact.%s' % (name),
-          timeout_seconds=timeout_seconds,
-          flake_retries=flake_retries,
-          timeout_retries=timeout_retries)
-  return jobspec
+REPORT_BASE_PATH = os.getenv("GRPC_TEST_REPORT_BASE_DIR", os.path.abspath("."))
 
 
-def create_jobspec(name, cmdline, environ={}, shell=False,
-                   flake_retries=0, timeout_retries=0, timeout_seconds=30*60,
-                   use_workspace=False,
-                   cpu_cost=1.0):
-  """Creates jobspec."""
-  environ = environ.copy()
-  if use_workspace:
-    environ['WORKSPACE_NAME'] = 'workspace_%s' % name
-    environ['ARTIFACTS_OUT'] = os.path.join('..', 'artifacts', name)
-    cmdline = ['bash',
-               'tools/run_tests/artifacts/run_in_workspace.sh'] + cmdline
-  else:
-    environ['ARTIFACTS_OUT'] = os.path.join('artifacts', name)
+def create_docker_jobspec(
+    name,
+    dockerfile_dir,
+    shell_command,
+    environ={},
+    flake_retries=0,
+    timeout_retries=0,
+    timeout_seconds=30 * 60,
+    extra_docker_args=None,
+    verbose_success=False,
+):
+    """Creates jobspec for a task running under docker."""
+    environ = environ.copy()
+    environ["ARTIFACTS_OUT"] = "artifacts/%s" % name
 
-  jobspec = jobset.JobSpec(
-          cmdline=cmdline,
-          environ=environ,
-          shortname='build_artifact.%s' % (name),
-          timeout_seconds=timeout_seconds,
-          flake_retries=flake_retries,
-          timeout_retries=timeout_retries,
-          shell=shell,
-          cpu_cost=cpu_cost)
-  return jobspec
+    docker_args = []
+    for k, v in list(environ.items()):
+        docker_args += ["-e", "%s=%s" % (k, v)]
+    docker_env = {
+        "DOCKERFILE_DIR": dockerfile_dir,
+        "DOCKER_RUN_SCRIPT": "tools/run_tests/dockerize/docker_run.sh",
+        "DOCKER_RUN_SCRIPT_COMMAND": shell_command,
+        "OUTPUT_DIR": "artifacts",
+    }
+    if extra_docker_args is not None:
+        docker_env["EXTRA_DOCKER_ARGS"] = extra_docker_args
+    jobspec = jobset.JobSpec(
+        cmdline=["tools/run_tests/dockerize/build_and_run_docker.sh"]
+        + docker_args,
+        environ=docker_env,
+        shortname="build_artifact.%s" % (name),
+        timeout_seconds=timeout_seconds,
+        flake_retries=flake_retries,
+        timeout_retries=timeout_retries,
+        verbose_success=verbose_success,
+        logfilename=os.path.abspath(
+            f"{REPORT_BASE_PATH}/reports/artifact.{name}.log"
+        ),
+    )
+    return jobspec
 
 
-_MACOS_COMPAT_FLAG = '-mmacosx-version-min=10.7'
+def create_jobspec(
+    name,
+    cmdline,
+    environ={},
+    shell=False,
+    flake_retries=0,
+    timeout_retries=0,
+    timeout_seconds=30 * 60,
+    use_workspace=False,
+    cpu_cost=1.0,
+    verbose_success=False,
+):
+    """Creates jobspec."""
+    environ = environ.copy()
+    if use_workspace:
+        environ["WORKSPACE_NAME"] = "workspace_%s" % name
+        environ["ARTIFACTS_OUT"] = os.path.join("..", "artifacts", name)
+        cmdline = [
+            "bash",
+            "tools/run_tests/artifacts/run_in_workspace.sh",
+        ] + cmdline
+    else:
+        environ["ARTIFACTS_OUT"] = os.path.join("artifacts", name)
 
-_ARCH_FLAG_MAP = {
-  'x86': '-m32',
-  'x64': '-m64'
-}
+    jobspec = jobset.JobSpec(
+        cmdline=cmdline,
+        environ=environ,
+        shortname="build_artifact.%s" % (name),
+        timeout_seconds=timeout_seconds,
+        flake_retries=flake_retries,
+        timeout_retries=timeout_retries,
+        shell=shell,
+        cpu_cost=cpu_cost,
+        verbose_success=verbose_success,
+        logfilename=os.path.abspath(
+            f"{REPORT_BASE_PATH}/reports/artifact.{name}.log"
+        ),
+    )
+    return jobspec
+
+
+_MACOS_COMPAT_FLAG = "-mmacosx-version-min=10.10"
+
+_ARCH_FLAG_MAP = {"x86": "-m32", "x64": "-m64"}
 
 
 class PythonArtifact:
-  """Builds Python artifacts."""
+    """Builds Python artifacts."""
 
-  def __init__(self, platform, arch, py_version):
-    self.name = 'python_%s_%s_%s' % (platform, arch, py_version)
-    self.platform = platform
-    self.arch = arch
-    self.labels = ['artifact', 'python', platform, arch, py_version]
-    self.py_version = py_version
+    def __init__(self, platform, arch, py_version, presubmit=False):
+        self.name = "python_%s_%s_%s" % (platform, arch, py_version)
+        self.platform = platform
+        self.arch = arch
+        self.labels = ["artifact", "python", platform, arch, py_version]
+        if presubmit:
+            self.labels.append("presubmit")
+        self.py_version = py_version
+        if platform == _LATEST_MANYLINUX:
+            self.labels.append("latest-manylinux")
+        if "manylinux" in platform:
+            self.labels.append("linux")
+        if "linux_extra" in platform:
+            # linux_extra wheels used to be built by a separate kokoro job.
+            # Their build is now much faster, so they can be included
+            # in the regular artifact build.
+            self.labels.append("linux")
+        if "musllinux" in platform:
+            self.labels.append("linux")
 
-  def pre_build_jobspecs(self):
-    return []
+    def pre_build_jobspecs(self):
+        return []
 
-  def build_jobspec(self):
-    environ = {}
-    if self.platform == 'linux_extra':
-      # Raspberry Pi build
-      environ['PYTHON'] = '/usr/local/bin/python{}'.format(self.py_version)
-      environ['PIP'] = '/usr/local/bin/pip{}'.format(self.py_version)
-      # https://github.com/resin-io-projects/armv7hf-debian-qemu/issues/9
-      # A QEMU bug causes submodule update to hang, so we copy directly
-      environ['RELATIVE_COPY_PATH'] = '.'
-      extra_args = ' --entrypoint=/usr/bin/qemu-arm-static '
-      return create_docker_jobspec(self.name,
-          'tools/dockerfile/grpc_artifact_linux_{}'.format(self.arch),
-          'tools/run_tests/artifacts/build_artifact_python.sh',
-          environ=environ,
-          timeout_seconds=60*60*5,
-          docker_base_image='quay.io/grpc/raspbian_{}'.format(self.arch),
-          extra_docker_args=extra_args)
-    elif self.platform == 'linux':
-      if self.arch == 'x86':
-        environ['SETARCH_CMD'] = 'linux32'
-      # Inside the manylinux container, the python installations are located in
-      # special places...
-      environ['PYTHON'] = '/opt/python/{}/bin/python'.format(self.py_version)
-      environ['PIP'] = '/opt/python/{}/bin/pip'.format(self.py_version)
-      # Platform autodetection for the manylinux1 image breaks so we set the
-      # defines ourselves.
-      # TODO(atash) get better platform-detection support in core so we don't
-      # need to do this manually...
-      environ['CFLAGS'] = '-DGPR_MANYLINUX1=1'
-      environ['GRPC_BUILD_GRPCIO_TOOLS_DEPENDENTS'] = 'TRUE'
-      environ['GRPC_BUILD_MANYLINUX_WHEEL'] = 'TRUE'
-      return create_docker_jobspec(self.name,
-          'tools/dockerfile/grpc_artifact_python_manylinux_%s' % self.arch,
-          'tools/run_tests/artifacts/build_artifact_python.sh',
-          environ=environ,
-          timeout_seconds=60*60,
-          docker_base_image='quay.io/pypa/manylinux1_i686' if self.arch == 'x86' else 'quay.io/pypa/manylinux1_x86_64')
-    elif self.platform == 'windows':
-      if 'Python27' in self.py_version or 'Python34' in self.py_version:
-        environ['EXT_COMPILER'] = 'mingw32'
-      else:
-        environ['EXT_COMPILER'] = 'msvc'
-      # For some reason, the batch script %random% always runs with the same
-      # seed.  We create a random temp-dir here
-      dir = ''.join(random.choice(string.ascii_uppercase) for _ in range(10))
-      return create_jobspec(self.name,
-                            ['tools\\run_tests\\artifacts\\build_artifact_python.bat',
-                             self.py_version,
-                             '32' if self.arch == 'x86' else '64'],
-                            environ=environ,
-                            timeout_seconds=45*60,
-                            use_workspace=True)
-    else:
-      environ['PYTHON'] = self.py_version
-      environ['SKIP_PIP_INSTALL'] = 'TRUE'
-      return create_jobspec(self.name,
-                            ['tools/run_tests/artifacts/build_artifact_python.sh'],
-                            environ=environ,
-                            timeout_seconds=60*60,
-                            use_workspace=True)
+    def build_jobspec(self, inner_jobs=None):
+        environ = {}
+        if inner_jobs is not None:
+            # set number of parallel jobs when building native extension
+            # building the native extension is the most time-consuming part of the build
+            environ["GRPC_PYTHON_BUILD_EXT_COMPILER_JOBS"] = str(inner_jobs)
 
-  def __str__(self):
-    return self.name
+        if self.platform == "macos":
+            environ["ARCHFLAGS"] = "-arch arm64 -arch x86_64"
+            environ["GRPC_BUILD_MAC"] = "true"
+
+        if self.platform == "linux_extra":
+            # Crosscompilation build for armv7 (e.g. Raspberry Pi)
+            environ["PYTHON"] = "/opt/python/{}/bin/python3".format(
+                self.py_version
+            )
+            environ["PIP"] = "/opt/python/{}/bin/pip3".format(self.py_version)
+            environ["GRPC_SKIP_PIP_CYTHON_UPGRADE"] = "TRUE"
+            environ["GRPC_SKIP_TWINE_CHECK"] = "TRUE"
+            environ["LDFLAGS"] = "-s"
+            return create_docker_jobspec(
+                self.name,
+                "tools/dockerfile/grpc_artifact_python_linux_{}".format(
+                    self.arch
+                ),
+                "tools/run_tests/artifacts/build_artifact_python.sh",
+                environ=environ,
+                timeout_seconds=60 * 60 * 4,
+            )
+        elif "manylinux" in self.platform:
+            if self.arch == "x86":
+                environ["SETARCH_CMD"] = "linux32"
+                environ["GRPC_SKIP_TWINE_CHECK"] = "TRUE"
+            # Inside the manylinux container, the python installations are located in
+            # special places...
+            environ["PYTHON"] = "/opt/python/{}/bin/python".format(
+                self.py_version
+            )
+            environ["PIP"] = "/opt/python/{}/bin/pip".format(self.py_version)
+            environ["GRPC_SKIP_PIP_CYTHON_UPGRADE"] = "TRUE"
+
+            # currently no manylinux architectures (including aarch64)
+            # require cross-compiling, hence the below values are set for all
+            # manylinux targets
+
+            environ["GRPC_RUN_AUDITWHEEL_REPAIR"] = "TRUE"
+            # only build the packages that depend on grpcio-tools
+            # if we're not crosscompiling.
+            # - they require protoc to run on current architecture
+            # - they only have sdist packages anyway, so it's useless to build them again
+            environ["GRPC_BUILD_GRPCIO_TOOLS_DEPENDENTS"] = "TRUE"
+
+            return create_docker_jobspec(
+                self.name,
+                "tools/dockerfile/grpc_artifact_python_%s_%s"
+                % (self.platform, self.arch),
+                "tools/run_tests/artifacts/build_artifact_python.sh",
+                environ=environ,
+                timeout_seconds=60 * 60 * 4,
+            )
+        elif "musllinux" in self.platform:
+            environ["PYTHON"] = "/opt/python/{}/bin/python".format(
+                self.py_version
+            )
+            environ["PIP"] = "/opt/python/{}/bin/pip".format(self.py_version)
+            environ["GRPC_SKIP_PIP_CYTHON_UPGRADE"] = "TRUE"
+            environ["GRPC_PYTHON_BUILD_WITH_STATIC_LIBSTDCXX"] = "TRUE"
+
+            if self.arch in ("x86"):
+                environ["GRPC_SKIP_TWINE_CHECK"] = "TRUE"
+
+            # We're using musllinux aarch64 image to build this artifact so no crosscompiling required.
+            environ["GRPC_BUILD_GRPCIO_TOOLS_DEPENDENTS"] = "TRUE"
+            environ["GRPC_RUN_AUDITWHEEL_REPAIR"] = "TRUE"
+
+            return create_docker_jobspec(
+                self.name,
+                "tools/dockerfile/grpc_artifact_python_%s_%s"
+                % (self.platform, self.arch),
+                "tools/run_tests/artifacts/build_artifact_python.sh",
+                environ=environ,
+                timeout_seconds=60 * 60 * 4,
+            )
+        elif self.platform == "windows":
+            environ["EXT_COMPILER"] = "msvc"
+            # For some reason, the batch script %random% always runs with the same
+            # seed.  We create a random temp-dir here
+            dir = "".join(
+                random.choice(string.ascii_uppercase) for _ in range(10)
+            )
+            return create_jobspec(
+                self.name,
+                [
+                    "tools\\run_tests\\artifacts\\build_artifact_python.bat",
+                    self.py_version,
+                    "32" if self.arch == "x86" else "64",
+                ],
+                environ=environ,
+                timeout_seconds=60 * 60 * 2,
+                use_workspace=True,
+            )
+        else:
+            environ["PYTHON"] = self.py_version
+            environ["SKIP_PIP_INSTALL"] = "TRUE"
+            return create_jobspec(
+                self.name,
+                ["tools/run_tests/artifacts/build_artifact_python.sh"],
+                environ=environ,
+                timeout_seconds=60 * 60 * 4,
+                use_workspace=True,
+            )
+
+    def __str__(self):
+        return self.name
 
 
 class RubyArtifact:
-  """Builds ruby native gem."""
+    """Builds ruby native gem."""
 
-  def __init__(self, platform, arch):
-    self.name = 'ruby_native_gem_%s_%s' % (platform, arch)
-    self.platform = platform
-    self.arch = arch
-    self.labels = ['artifact', 'ruby', platform, arch]
+    def __init__(self, platform, gem_platform, presubmit=False):
+        self.name = "ruby_native_gem_%s_%s" % (platform, gem_platform)
+        self.platform = platform
+        self.gem_platform = gem_platform
+        platform_label = self.platform
+        self.labels = ["artifact", "ruby", platform, gem_platform]
+        if presubmit:
+            self.labels.append("presubmit")
 
-  def pre_build_jobspecs(self):
-    return []
+    def pre_build_jobspecs(self):
+        return []
 
-  def build_jobspec(self):
-    # Ruby build uses docker internally and docker cannot be nested.
-    # We are using a custom workspace instead.
-    return create_jobspec(self.name,
-                          ['tools/run_tests/artifacts/build_artifact_ruby.sh'],
-                          use_workspace=True,
-                          timeout_seconds=45*60)
+    def build_jobspec(self, inner_jobs=None):
+        environ = {}
+        if inner_jobs is not None:
+            # set number of parallel jobs when building native extension
+            environ["GRPC_RUBY_BUILD_PROCS"] = str(inner_jobs)
 
+        # determine build_type at runtime.
+        # By default, build all supported ruby versions ("continuous").
+        # If explicitly running in presubmit, build only a subset of versions to save time.
+        build_type = "continuous"
+        if os.environ.get("KOKORO_JOB_TYPE") == "PRESUBMIT":
+            build_type = "presubmit"
 
-class CSharpExtArtifact:
-  """Builds C# native extension library"""
+        # Ruby build uses docker internally and docker cannot be nested.
+        # We are using a custom workspace instead.
+        return create_jobspec(
+            self.name,
+            [
+                "tools/run_tests/artifacts/build_artifact_ruby.sh",
+                self.gem_platform,
+                build_type,
+            ],
+            use_workspace=True,
+            timeout_seconds=240 * 60,
+            environ=environ,
+        )
 
-  def __init__(self, platform, arch):
-    self.name = 'csharp_ext_%s_%s' % (platform, arch)
-    self.platform = platform
-    self.arch = arch
-    self.labels = ['artifact', 'csharp', platform, arch]
-
-  def pre_build_jobspecs(self):
-    return []
-
-  def build_jobspec(self):
-    if self.platform == 'windows':
-      cmake_arch_option = 'Win32' if self.arch == 'x86' else self.arch
-      return create_jobspec(self.name,
-                            ['tools\\run_tests\\artifacts\\build_artifact_csharp.bat',
-                             cmake_arch_option],
-                            use_workspace=True)
-    else:
-      environ = {'CONFIG': 'opt',
-                 'EMBED_OPENSSL': 'true',
-                 'EMBED_ZLIB': 'true',
-                 'CFLAGS': '-DGPR_BACKWARDS_COMPATIBILITY_MODE',
-                 'CXXFLAGS': '-DGPR_BACKWARDS_COMPATIBILITY_MODE',
-                 'LDFLAGS': ''}
-      if self.platform == 'linux':
-        return create_docker_jobspec(self.name,
-            'tools/dockerfile/grpc_artifact_linux_%s' % self.arch,
-            'tools/run_tests/artifacts/build_artifact_csharp.sh',
-            environ=environ)
-      else:
-        archflag = _ARCH_FLAG_MAP[self.arch]
-        environ['CFLAGS'] += ' %s %s' % (archflag, _MACOS_COMPAT_FLAG)
-        environ['CXXFLAGS'] += ' %s %s' % (archflag, _MACOS_COMPAT_FLAG)
-        environ['LDFLAGS'] += ' %s' % archflag
-        return create_jobspec(self.name,
-                              ['tools/run_tests/artifacts/build_artifact_csharp.sh'],
-                              environ=environ,
-                              use_workspace=True)
-
-  def __str__(self):
-    return self.name
 
 class PHPArtifact:
-  """Builds PHP PECL package"""
+    """Builds PHP PECL package"""
 
-  def __init__(self, platform, arch):
-    self.name = 'php_pecl_package_{0}_{1}'.format(platform, arch)
-    self.platform = platform
-    self.arch = arch
-    self.labels = ['artifact', 'php', platform, arch]
+    def __init__(self, platform, arch, presubmit=False):
+        self.name = "php_pecl_package_{0}_{1}".format(platform, arch)
+        self.platform = platform
+        self.arch = arch
+        self.labels = ["artifact", "php", platform, arch]
+        if presubmit:
+            self.labels.append("presubmit")
 
-  def pre_build_jobspecs(self):
-    return []
+    def pre_build_jobspecs(self):
+        return []
 
-  def build_jobspec(self):
-    if self.platform == 'linux':
-      return create_docker_jobspec(
-          self.name,
-          'tools/dockerfile/grpc_artifact_linux_{}'.format(self.arch),
-          'tools/run_tests/artifacts/build_artifact_php.sh')
-    else:
-      return create_jobspec(self.name,
-                            ['tools/run_tests/artifacts/build_artifact_php.sh'],
-                            use_workspace=True)
+    def build_jobspec(self, inner_jobs=None):
+        del inner_jobs  # arg unused as PHP artifact build is basically just packing an archive
+        if self.platform == "linux":
+            return create_docker_jobspec(
+                self.name,
+                "tools/dockerfile/test/php8_zts_debian12_{}".format(self.arch),
+                "tools/run_tests/artifacts/build_artifact_php.sh",
+            )
+        else:
+            return create_jobspec(
+                self.name,
+                ["tools/run_tests/artifacts/build_artifact_php.sh"],
+                use_workspace=True,
+            )
+
 
 class ProtocArtifact:
-  """Builds protoc and protoc-plugin artifacts"""
+    """Builds protoc and protoc-plugin artifacts"""
 
-  def __init__(self, platform, arch):
-    self.name = 'protoc_%s_%s' % (platform, arch)
-    self.platform = platform
-    self.arch = arch
-    self.labels = ['artifact', 'protoc', platform, arch]
+    def __init__(self, platform, arch, presubmit=False):
+        self.name = "protoc_%s_%s" % (platform, arch)
+        self.platform = platform
+        self.arch = arch
+        self.labels = ["artifact", "protoc", platform, arch]
+        if presubmit:
+            self.labels.append("presubmit")
 
-  def pre_build_jobspecs(self):
-      return []
+    def pre_build_jobspecs(self):
+        return []
 
-  def build_jobspec(self):
-    if self.platform != 'windows':
-      cxxflags = '-DNDEBUG %s' % _ARCH_FLAG_MAP[self.arch]
-      ldflags = '%s' % _ARCH_FLAG_MAP[self.arch]
-      if self.platform != 'macos':
-        ldflags += '  -static-libgcc -static-libstdc++ -s'
-      environ={'CONFIG': 'opt',
-               'CXXFLAGS': cxxflags,
-               'LDFLAGS': ldflags,
-               'PROTOBUF_LDFLAGS_EXTRA': ldflags}
-      if self.platform == 'linux':
-        return create_docker_jobspec(self.name,
-            'tools/dockerfile/grpc_artifact_protoc',
-            'tools/run_tests/artifacts/build_artifact_protoc.sh',
-            environ=environ)
-      else:
-        environ['CXXFLAGS'] += ' -std=c++11 -stdlib=libc++ %s' % _MACOS_COMPAT_FLAG
-        return create_jobspec(self.name,
-            ['tools/run_tests/artifacts/build_artifact_protoc.sh'],
-            environ=environ,
-            use_workspace=True)
-    else:
-      generator = 'Visual Studio 14 2015 Win64' if self.arch == 'x64' else 'Visual Studio 14 2015'
-      return create_jobspec(self.name,
-                            ['tools\\run_tests\\artifacts\\build_artifact_protoc.bat'],
-                            environ={'generator': generator},
-                            use_workspace=True)
+    def build_jobspec(self, inner_jobs=None):
+        environ = {}
+        if inner_jobs is not None:
+            # set number of parallel jobs when building protoc
+            environ["GRPC_PROTOC_BUILD_COMPILER_JOBS"] = str(inner_jobs)
 
-  def __str__(self):
-    return self.name
+        if self.platform != "windows":
+            environ["CXXFLAGS"] = ""
+            environ["LDFLAGS"] = ""
+            if self.platform == "linux":
+                dockerfile_dir = (
+                    "tools/dockerfile/grpc_artifact_manylinux2014_{}".format(
+                        self.arch
+                    )
+                )
+                if self.arch == "aarch64":
+                    # for aarch64, use a dockcross manylinux image that will
+                    # give us both ready to use crosscompiler and sufficient backward compatibility
+                    dockerfile_dir = (
+                        "tools/dockerfile/grpc_artifact_manylinux_2_28_aarch64"
+                    )
+                    # The manylinux_2_28 cross-compilation toolchain may produce
+                    # binaries with 4KB page alignment, but ARM64 Linux kernels
+                    # (e.g. RHEL) can use 64KB pages. Without this flag the
+                    # protoc binary will segfault (exit code 139) on such systems.
+                    # See https://github.com/grpc/grpc/issues/38538
+                    # and https://github.com/pypa/manylinux/issues/735.
+                    environ["LDFLAGS"] += " -Wl,-z,max-page-size=65536"
+                environ["LDFLAGS"] += " -static-libgcc -static-libstdc++ -s"
+                return create_docker_jobspec(
+                    self.name,
+                    dockerfile_dir,
+                    "tools/run_tests/artifacts/build_artifact_protoc.sh",
+                    environ=environ,
+                )
+            else:
+                environ["CXXFLAGS"] += (
+                    " -std=c++17 -stdlib=libc++ %s" % _MACOS_COMPAT_FLAG
+                )
+                return create_jobspec(
+                    self.name,
+                    ["tools/run_tests/artifacts/build_artifact_protoc.sh"],
+                    environ=environ,
+                    timeout_seconds=60 * 60,
+                    use_workspace=True,
+                )
+        else:
+            vs_tools_architecture = (
+                self.arch
+            )  # architecture selector passed to vcvarsall.bat
+            environ["ARCHITECTURE"] = vs_tools_architecture
+            return create_jobspec(
+                self.name,
+                ["tools\\run_tests\\artifacts\\build_artifact_protoc.bat"],
+                environ=environ,
+                use_workspace=True,
+            )
+
+    def __str__(self):
+        return self.name
+
+
+def _reorder_targets_for_build_speed(targets):
+    """Reorder targets to achieve optimal build speed"""
+    # ruby artifact build builds multiple artifacts at once, so make sure
+    # we start building ruby artifacts first, so that they don't end up
+    # being a long tail once everything else finishes.
+    return list(
+        sorted(
+            targets,
+            key=lambda target: 0 if target.name.startswith("ruby_") else 1,
+        )
+    )
 
 
 def targets():
-  """Gets list of supported targets"""
-  return ([Cls(platform, arch)
-           for Cls in (CSharpExtArtifact, ProtocArtifact)
-           for platform in ('linux', 'macos', 'windows')
-           for arch in ('x86', 'x64')] +
-          [PythonArtifact('linux', 'x86', 'cp27-cp27m'),
-           PythonArtifact('linux', 'x86', 'cp27-cp27mu'),
-           PythonArtifact('linux', 'x86', 'cp34-cp34m'),
-           PythonArtifact('linux', 'x86', 'cp35-cp35m'),
-           PythonArtifact('linux', 'x86', 'cp36-cp36m'),
-           PythonArtifact('linux_extra', 'armv7', '2.7'),
-           PythonArtifact('linux_extra', 'armv7', '3.4'),
-           PythonArtifact('linux_extra', 'armv7', '3.5'),
-           PythonArtifact('linux_extra', 'armv7', '3.6'),
-           PythonArtifact('linux_extra', 'armv6', '2.7'),
-           PythonArtifact('linux_extra', 'armv6', '3.4'),
-           PythonArtifact('linux_extra', 'armv6', '3.5'),
-           PythonArtifact('linux_extra', 'armv6', '3.6'),
-           PythonArtifact('linux', 'x64', 'cp27-cp27m'),
-           PythonArtifact('linux', 'x64', 'cp27-cp27mu'),
-           PythonArtifact('linux', 'x64', 'cp34-cp34m'),
-           PythonArtifact('linux', 'x64', 'cp35-cp35m'),
-           PythonArtifact('linux', 'x64', 'cp36-cp36m'),
-           PythonArtifact('macos', 'x64', 'python2.7'),
-           PythonArtifact('macos', 'x64', 'python3.4'),
-           PythonArtifact('macos', 'x64', 'python3.5'),
-           PythonArtifact('macos', 'x64', 'python3.6'),
-           PythonArtifact('windows', 'x86', 'Python27_32bits'),
-           PythonArtifact('windows', 'x86', 'Python34_32bits'),
-           PythonArtifact('windows', 'x86', 'Python35_32bits'),
-           PythonArtifact('windows', 'x86', 'Python36_32bits'),
-           PythonArtifact('windows', 'x64', 'Python27'),
-           PythonArtifact('windows', 'x64', 'Python34'),
-           PythonArtifact('windows', 'x64', 'Python35'),
-           PythonArtifact('windows', 'x64', 'Python36'),
-           RubyArtifact('linux', 'x64'),
-           RubyArtifact('macos', 'x64'),
-           PHPArtifact('linux', 'x64'),
-           PHPArtifact('macos', 'x64')])
+    """Gets list of supported targets"""
+    return _reorder_targets_for_build_speed(
+        [
+            ProtocArtifact("linux", "x64", presubmit=True),
+            ProtocArtifact("linux", "x86", presubmit=True),
+            ProtocArtifact("linux", "aarch64", presubmit=True),
+            ProtocArtifact(
+                "macos", "x64", presubmit=True
+            ),  # builds universal binary (x64 + arm64)
+            ProtocArtifact("windows", "x64", presubmit=True),
+            ProtocArtifact("windows", "x86", presubmit=True),
+            PythonArtifact(
+                "manylinux2014", "x64", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("manylinux2014", "x64", "cp311-cp311"),
+            PythonArtifact("manylinux2014", "x64", "cp312-cp312"),
+            PythonArtifact("manylinux2014", "x64", "cp313-cp313"),
+            PythonArtifact("manylinux2014", "x64", "cp314-cp314"),
+            PythonArtifact(
+                "manylinux2014", "x64", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact(
+                "manylinux2014", "x86", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("manylinux2014", "x86", "cp311-cp311"),
+            PythonArtifact("manylinux2014", "x86", "cp312-cp312"),
+            PythonArtifact("manylinux2014", "x86", "cp313-cp313"),
+            PythonArtifact("manylinux2014", "x86", "cp314-cp314"),
+            PythonArtifact(
+                "manylinux2014", "x86", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact(
+                "manylinux2014", "aarch64", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("manylinux2014", "aarch64", "cp311-cp311"),
+            PythonArtifact("manylinux2014", "aarch64", "cp312-cp312"),
+            PythonArtifact("manylinux2014", "aarch64", "cp313-cp313"),
+            PythonArtifact("manylinux2014", "aarch64", "cp314-cp314"),
+            PythonArtifact(
+                "manylinux2014", "aarch64", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact(
+                "linux_extra", "armv7", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("linux_extra", "armv7", "cp311-cp311"),
+            PythonArtifact("linux_extra", "armv7", "cp312-cp312"),
+            PythonArtifact("linux_extra", "armv7", "cp313-cp313"),
+            PythonArtifact("linux_extra", "armv7", "cp314-cp314"),
+            PythonArtifact(
+                "linux_extra", "armv7", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact(
+                "musllinux_1_2", "x64", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("musllinux_1_2", "x64", "cp311-cp311"),
+            PythonArtifact("musllinux_1_2", "x64", "cp312-cp312"),
+            PythonArtifact("musllinux_1_2", "x64", "cp313-cp313"),
+            PythonArtifact("musllinux_1_2", "x64", "cp314-cp314"),
+            PythonArtifact(
+                "musllinux_1_2", "x64", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact(
+                "musllinux_1_2", "x86", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("musllinux_1_2", "x86", "cp311-cp311"),
+            PythonArtifact("musllinux_1_2", "x86", "cp312-cp312"),
+            PythonArtifact("musllinux_1_2", "x86", "cp313-cp313"),
+            PythonArtifact("musllinux_1_2", "x86", "cp314-cp314"),
+            PythonArtifact(
+                "musllinux_1_2", "x86", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact(
+                "musllinux_1_2", "aarch64", "cp310-cp310", presubmit=True
+            ),
+            PythonArtifact("musllinux_1_2", "aarch64", "cp311-cp311"),
+            PythonArtifact("musllinux_1_2", "aarch64", "cp312-cp312"),
+            PythonArtifact("musllinux_1_2", "aarch64", "cp313-cp313"),
+            PythonArtifact("musllinux_1_2", "aarch64", "cp314-cp314"),
+            PythonArtifact(
+                "musllinux_1_2", "aarch64", "cp315-cp315", presubmit=True
+            ),
+            PythonArtifact("macos", "x64", "python3.10", presubmit=True),
+            PythonArtifact("macos", "x64", "python3.11"),
+            PythonArtifact("macos", "x64", "python3.12"),
+            PythonArtifact("macos", "x64", "python3.13"),
+            PythonArtifact("macos", "x64", "python3.14"),
+            PythonArtifact("macos", "x64", "python3.15", presubmit=True),
+            PythonArtifact("windows", "x86", "Python310_32bit", presubmit=True),
+            PythonArtifact("windows", "x86", "Python311_32bit"),
+            PythonArtifact("windows", "x86", "Python312_32bit"),
+            PythonArtifact("windows", "x86", "Python313_32bit"),
+            PythonArtifact("windows", "x86", "Python314_32bit"),
+            PythonArtifact("windows", "x86", "Python315_32bit", presubmit=True),
+            PythonArtifact("windows", "x64", "Python310", presubmit=True),
+            PythonArtifact("windows", "x64", "Python311"),
+            PythonArtifact("windows", "x64", "Python312"),
+            PythonArtifact("windows", "x64", "Python313"),
+            PythonArtifact("windows", "x64", "Python314"),
+            PythonArtifact("windows", "x64", "Python315", presubmit=True),
+            RubyArtifact("linux", "x86-mingw32", presubmit=True),
+            # TODO(weizheyuan, asheshvidyut): Properly install gcc-mingw >= 10
+            # (which is required by abseil) and re-enable this test.
+            # RubyArtifact("linux", "x64-mingw-ucrt"),
+            #
+            # See https://github.com/grpc/grpc/issues/43374
+            RubyArtifact("linux", "x86_64-linux-gnu", presubmit=True),
+            RubyArtifact("linux", "x86_64-linux-musl", presubmit=True),
+            RubyArtifact("linux", "x86-linux-gnu"),
+            RubyArtifact("linux", "x86-linux-musl", presubmit=True),
+            RubyArtifact("linux", "aarch64-linux-gnu", presubmit=True),
+            RubyArtifact("linux", "aarch64-linux-musl"),
+            RubyArtifact("linux", "x86_64-darwin"),
+            RubyArtifact("linux", "arm64-darwin", presubmit=True),
+            PHPArtifact("linux", "x64", presubmit=True),
+            PHPArtifact("macos", "x64", presubmit=True),
+        ]
+    )

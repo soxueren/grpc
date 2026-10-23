@@ -20,6 +20,7 @@
 #define GRPC_INTERNAL_COMPILER_PYTHON_GENERATOR_H
 
 #include <utility>
+#include <vector>
 
 #include "src/compiler/config.h"
 #include "src/compiler/schema_interface.h"
@@ -30,11 +31,14 @@ namespace grpc_python_generator {
 // that may be used internally at Google.
 struct GeneratorConfiguration {
   GeneratorConfiguration();
-  grpc::string grpc_package_root;
+  GeneratorConfiguration(std::string version);
+  std::string grpc_package_root;
   // TODO(https://github.com/grpc/grpc/issues/8622): Drop this.
-  grpc::string beta_package_root;
-  // TODO(https://github.com/google/protobuf/issues/888): Drop this.
-  grpc::string import_prefix;
+  std::string beta_package_root;
+  // TODO(https://github.com/protocolbuffers/protobuf/issues/888): Drop this.
+  std::string import_prefix;
+  std::string grpc_tools_version;
+  std::vector<std::string> prefixes_to_filter;
 };
 
 class PythonGrpcGenerator : public grpc::protobuf::compiler::CodeGenerator {
@@ -42,10 +46,33 @@ class PythonGrpcGenerator : public grpc::protobuf::compiler::CodeGenerator {
   PythonGrpcGenerator(const GeneratorConfiguration& config);
   ~PythonGrpcGenerator();
 
+  uint64_t GetSupportedFeatures() const override {
+    return FEATURE_PROTO3_OPTIONAL
+#ifdef GRPC_PROTOBUF_EDITION_SUPPORT
+           | FEATURE_SUPPORTS_EDITIONS
+#endif
+        ;
+  }
+
+#ifdef GRPC_PROTOBUF_EDITION_SUPPORT
+  grpc::protobuf::Edition GetMinimumEdition() const override {
+    return grpc::protobuf::Edition::EDITION_PROTO2;
+  }
+  grpc::protobuf::Edition GetMaximumEdition() const override {
+    // TODO(yuanweiz): Remove when the protobuf is updated to a version
+    //      that supports edition 2024.
+#if !defined(GOOGLE_PROTOBUF_VERSION) || GOOGLE_PROTOBUF_VERSION >= 6032000
+    return grpc::protobuf::Edition::EDITION_2024;
+#else
+    return grpc::protobuf::Edition::EDITION_2023;
+#endif
+  }
+#endif
+
   bool Generate(const grpc::protobuf::FileDescriptor* file,
-                const grpc::string& parameter,
+                const std::string& parameter,
                 grpc::protobuf::compiler::GeneratorContext* context,
-                grpc::string* error) const;
+                std::string* error) const override;
 
  private:
   GeneratorConfiguration config_;

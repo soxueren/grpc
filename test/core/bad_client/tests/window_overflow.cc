@@ -1,32 +1,32 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+// Copyright 2023 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-#include "test/core/bad_client/bad_client.h"
-
+#include <grpc/grpc.h>
+#include <grpc/support/alloc.h>
+#include <stdint.h>
 #include <string.h>
 
-#include <grpc/support/alloc.h>
+#include <algorithm>
 
-#include "src/core/lib/surface/server.h"
+#include "src/core/server/server.h"
+#include "src/core/util/grpc_check.h"
+#include "test/core/bad_client/bad_client.h"
+#include "test/core/test_util/test_config.h"
+#include "gtest/gtest.h"
 
 #define PFX_STR                                                            \
-  "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"                                       \
-  "\x00\x00\x00\x04\x00\x00\x00\x00\x00" /* settings frame */              \
+  "\x00\x00\x00\x04\x01\x00\x00\x00\x00"                                   \
   "\x00\x00\xc9\x01\x04\x00\x00\x00\x01" /* headers: generated from        \
                                             simple_request.headers in this \
                                             directory */                   \
@@ -43,9 +43,9 @@
   "\x10\x0auser-agent\"bad-client grpc-c/0.12.0.0 (linux)"
 
 static void verifier(grpc_server* server, grpc_completion_queue* cq,
-                     void* registered_method) {
-  while (grpc_server_has_open_connections(server)) {
-    GPR_ASSERT(grpc_completion_queue_next(
+                     void* /*registered_method*/) {
+  while (grpc_core::Server::FromC(server)->HasOpenConnections()) {
+    GRPC_CHECK(grpc_completion_queue_next(
                    cq, grpc_timeout_milliseconds_to_deadline(20), nullptr)
                    .type == GRPC_QUEUE_TIMEOUT);
   }
@@ -57,7 +57,7 @@ size_t g_count = 0;
 
 static void addbuf(const void* data, size_t len) {
   if (g_count + len > g_cap) {
-    g_cap = GPR_MAX(g_count + len, g_cap * 2);
+    g_cap = std::max(g_count + len, g_cap * 2);
     g_buffer = static_cast<char*>(gpr_realloc(g_buffer, g_cap));
   }
   memcpy(g_buffer + g_count, data, len);
@@ -69,15 +69,18 @@ int main(int argc, char** argv) {
 #define MAX_FRAME_SIZE 16384
 #define MESSAGES_PER_FRAME (MAX_FRAME_SIZE / 5)
 #define FRAME_SIZE (MESSAGES_PER_FRAME * 5)
-#define SEND_SIZE (6 * 1024 * 1024)
+#define SEND_SIZE (4 * 1024 * 1024)
 #define NUM_FRAMES (SEND_SIZE / FRAME_SIZE + 1)
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(&argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
+  grpc_init();
 
   addbuf(PFX_STR, sizeof(PFX_STR) - 1);
   for (i = 0; i < NUM_FRAMES; i++) {
-    uint8_t hdr[9] = {(uint8_t)(FRAME_SIZE >> 16),
-                      (uint8_t)(FRAME_SIZE >> 8),
-                      (uint8_t)FRAME_SIZE,
+    uint8_t hdr[9] = {static_cast<uint8_t>(FRAME_SIZE >> 16),
+                      static_cast<uint8_t>(FRAME_SIZE >> 8),
+                      static_cast<uint8_t>
+                          FRAME_SIZE,
                       0,
                       0,
                       0,
@@ -90,9 +93,12 @@ int main(int argc, char** argv) {
       addbuf(message, sizeof(message));
     }
   }
-  grpc_run_bad_client_test(verifier, nullptr, g_buffer, g_count,
-                           GRPC_BAD_CLIENT_LARGE_REQUEST);
+  grpc_bad_client_arg bca[2];
+  bca[0] = connection_preface_arg;
+  bca[1] = {rst_stream_client_validator, nullptr, g_buffer, g_count};
+  grpc_run_bad_client_test(verifier, bca, 2, GRPC_BAD_CLIENT_LARGE_REQUEST);
   gpr_free(g_buffer);
+  grpc_shutdown();
 
   return 0;
 }

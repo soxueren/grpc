@@ -16,9 +16,14 @@
  * limitations under the License.
  *
  */
-class SecureEndToEndTest extends PHPUnit_Framework_TestCase
+class SecureEndToEndTest extends \PHPUnit\Framework\TestCase
 {
-    public function setUp()
+    private $server;
+    private $port;
+    private $host_override;
+    private $channel;
+
+    public function setUp(): void
     {
         $credentials = Grpc\ChannelCredentials::createSsl(
             file_get_contents(dirname(__FILE__).'/../data/ca.pem'));
@@ -34,6 +39,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $this->channel = new Grpc\Channel(
             'localhost:'.$this->port,
             [
+            'force_new' => true,
             'grpc.ssl_target_name_override' => $this->host_override,
             'grpc.default_authority' => $this->host_override,
             'credentials' => $credentials,
@@ -41,9 +47,10 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         );
     }
 
-    public function tearDown()
+    public function tearDown(): void
     {
         $this->channel->close();
+        unset($this->server);
     }
 
     public function testSimpleRequestBody()
@@ -51,7 +58,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $deadline = Grpc\Timeval::infFuture();
         $status_text = 'xyz';
         $call = new Grpc\Call($this->channel,
-                              'dummy_method',
+                              'phony_method',
                               $deadline,
                               $this->host_override);
 
@@ -64,14 +71,14 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $this->assertTrue($event->send_close);
 
         $event = $this->server->requestCall();
-        $this->assertSame('dummy_method', $event->method);
+        $this->assertSame('phony_method', $event->method);
         $server_call = $event->call;
 
         $event = $server_call->startBatch([
             Grpc\OP_SEND_INITIAL_METADATA => [],
             Grpc\OP_SEND_STATUS_FROM_SERVER => [
                 'metadata' => [],
-                'code' => Grpc\STATUS_OK,
+                'code' => Grpc\STATUS_INVALID_ARGUMENT,
                 'details' => $status_text,
             ],
             Grpc\OP_RECV_CLOSE_ON_SERVER => true,
@@ -89,7 +96,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $this->assertSame([], $event->metadata);
         $status = $event->status;
         $this->assertSame([], $status->metadata);
-        $this->assertSame(Grpc\STATUS_OK, $status->code);
+        $this->assertSame(Grpc\STATUS_INVALID_ARGUMENT, $status->code);
         $this->assertSame($status_text, $status->details);
 
         unset($call);
@@ -100,9 +107,8 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
     {
         $deadline = Grpc\Timeval::infFuture();
         $req_text = 'message_write_flags_test';
-        $status_text = 'xyz';
         $call = new Grpc\Call($this->channel,
-                              'dummy_method',
+                              'phony_method',
                               $deadline,
                               $this->host_override);
 
@@ -117,7 +123,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $this->assertTrue($event->send_close);
 
         $event = $this->server->requestCall();
-        $this->assertSame('dummy_method', $event->method);
+        $this->assertSame('phony_method', $event->method);
         $server_call = $event->call;
 
         $event = $server_call->startBatch([
@@ -125,7 +131,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
             Grpc\OP_SEND_STATUS_FROM_SERVER => [
                 'metadata' => [],
                 'code' => Grpc\STATUS_OK,
-                'details' => $status_text,
+                'details' => '',
             ],
         ]);
 
@@ -138,7 +144,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $status = $event->status;
         $this->assertSame([], $status->metadata);
         $this->assertSame(Grpc\STATUS_OK, $status->code);
-        $this->assertSame($status_text, $status->details);
+        $this->assertSame("", $status->details);
 
         unset($call);
         unset($server_call);
@@ -149,10 +155,9 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $deadline = Grpc\Timeval::infFuture();
         $req_text = 'client_server_full_request_response';
         $reply_text = 'reply:client_server_full_request_response';
-        $status_text = 'status:client_server_full_response_text';
 
         $call = new Grpc\Call($this->channel,
-                              'dummy_method',
+                              'phony_method',
                               $deadline,
                               $this->host_override);
 
@@ -167,8 +172,14 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $this->assertTrue($event->send_message);
 
         $event = $this->server->requestCall();
-        $this->assertSame('dummy_method', $event->method);
+        $this->assertSame('phony_method', $event->method);
         $server_call = $event->call;
+
+        $event = $server_call->startBatch([
+            Grpc\OP_RECV_MESSAGE => true,
+        ]);
+
+        $this->assertSame($req_text, $event->message);
 
         $event = $server_call->startBatch([
             Grpc\OP_SEND_INITIAL_METADATA => [],
@@ -176,9 +187,8 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
             Grpc\OP_SEND_STATUS_FROM_SERVER => [
                 'metadata' => [],
                 'code' => Grpc\STATUS_OK,
-                'details' => $status_text,
+                'details' => '',
             ],
-            Grpc\OP_RECV_MESSAGE => true,
             Grpc\OP_RECV_CLOSE_ON_SERVER => true,
         ]);
 
@@ -186,7 +196,6 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $this->assertTrue($event->send_status);
         $this->assertTrue($event->send_message);
         $this->assertFalse($event->cancelled);
-        $this->assertSame($req_text, $event->message);
 
         $event = $call->startBatch([
             Grpc\OP_RECV_INITIAL_METADATA => true,
@@ -199,7 +208,7 @@ class SecureEndToEndTest extends PHPUnit_Framework_TestCase
         $status = $event->status;
         $this->assertSame([], $status->metadata);
         $this->assertSame(Grpc\STATUS_OK, $status->code);
-        $this->assertSame($status_text, $status->details);
+        $this->assertSame("", $status->details);
 
         unset($call);
         unset($server_call);

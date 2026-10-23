@@ -17,7 +17,6 @@ from grpc_testing import _common
 
 
 class ServicerContext(grpc.ServicerContext):
-
     def __init__(self, rpc, time, deadline):
         self._rpc = rpc
         self._time = time
@@ -30,10 +29,8 @@ class ServicerContext(grpc.ServicerContext):
         if self._rpc.is_active():
             if self._deadline is None:
                 return None
-            else:
-                return max(0.0, self._deadline - self._time.time())
-        else:
-            return 0.0
+            return max(0.0, self._deadline - self._time.time())
+        return 0.0
 
     def cancel(self):
         self._rpc.application_cancel()
@@ -56,16 +53,32 @@ class ServicerContext(grpc.ServicerContext):
     def auth_context(self):
         raise NotImplementedError()
 
+    def set_compression(self):
+        raise NotImplementedError()
+
     def send_initial_metadata(self, initial_metadata):
         initial_metadata_sent = self._rpc.send_initial_metadata(
-            _common.fuss_with_metadata(initial_metadata))
+            _common.fuss_with_metadata(initial_metadata)
+        )
         if not initial_metadata_sent:
-            raise ValueError(
-                'ServicerContext.send_initial_metadata called too late!')
+            error_msg = "ServicerContext.send_initial_metadata called too late!"
+            raise ValueError(error_msg)
+
+    def disable_next_message_compression(self):
+        raise NotImplementedError()
 
     def set_trailing_metadata(self, trailing_metadata):
         self._rpc.set_trailing_metadata(
-            _common.fuss_with_metadata(trailing_metadata))
+            _common.fuss_with_metadata(trailing_metadata)
+        )
+
+    def abort(self, code, details):
+        with self._rpc._condition:
+            self._rpc._abort(code, details)
+        raise Exception()  # noqa: TRY002
+
+    def abort_with_status(self, status):
+        raise NotImplementedError()
 
     def set_code(self, code):
         self._rpc.set_code(code)

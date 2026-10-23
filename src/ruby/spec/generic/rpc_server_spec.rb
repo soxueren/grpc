@@ -46,7 +46,7 @@ class FailingService
 
   def initialize(_default_var = 'ignored')
     @details = 'app error'
-    @code = 101
+    @code = 3
     @md = { 'failed_method' => 'an_rpc' }
   end
 
@@ -61,6 +61,7 @@ FailingStub = FailingService.rpc_stub_class
 class SlowService
   include GRPC::GenericService
   rpc :an_rpc, EchoMsg, EchoMsg
+  rpc :a_server_streaming_rpc, EchoMsg, stream(EchoMsg)
   attr_reader :received_md, :delay
 
   def initialize(_default_var = 'ignored')
@@ -73,6 +74,13 @@ class SlowService
     sleep @delay
     @received_md << call.metadata unless call.metadata.nil?
     req  # send back the req as the response
+  end
+
+  def a_server_streaming_rpc(_, call)
+    GRPC.logger.info("starting a slow #{@delay} server streaming rpc")
+    sleep @delay
+    @received_md << call.metadata unless call.metadata.nil?
+    [EchoMsg.new, EchoMsg.new]
   end
 end
 
@@ -104,7 +112,7 @@ end
 
 SynchronizedCancellationStub = SynchronizedCancellationService.rpc_stub_class
 
-# a test service that hangs onto call objects
+# a test service that holds onto call objects
 # and uses them after the server-side call has been
 # finished
 class CheckCallAfterFinishedService
@@ -125,7 +133,7 @@ class CheckCallAfterFinishedService
     fail 'shouldnt reuse service' unless @server_side_call.nil?
     @server_side_call = call
     # iterate through requests so call can complete
-    call.each_remote_read.each { |r| p r }
+    call.each_remote_read.each { |r| GRPC.logger.info(r) }
     EchoMsg.new
   end
 
@@ -138,7 +146,7 @@ class CheckCallAfterFinishedService
   def a_bidi_rpc(requests, call)
     fail 'shouldnt reuse service' unless @server_side_call.nil?
     @server_side_call = call
-    requests.each { |r| p r }
+    requests.each { |r| GRPC.logger.info(r) }
     [EchoMsg.new, EchoMsg.new]
   end
 end
@@ -172,7 +180,7 @@ describe GRPC::RpcServer do
     it 'can be created with just some args' do
       opts = { server_args: { a_channel_arg: 'an_arg' } }
       blk = proc do
-        RpcServer.new(**opts)
+        new_rpc_server_for_testing(**opts)
       end
       expect(&blk).not_to raise_error
     end
@@ -183,7 +191,7 @@ describe GRPC::RpcServer do
           server_args: { a_channel_arg: 'an_arg' },
           creds: Object.new
         }
-        RpcServer.new(**opts)
+        new_rpc_server_for_testing(**opts)
       end
       expect(&blk).to raise_error
     end
@@ -192,7 +200,7 @@ describe GRPC::RpcServer do
   describe '#stopped?' do
     before(:each) do
       opts = { server_args: { a_channel_arg: 'an_arg' }, poll_period: 1.5 }
-      @srv = RpcServer.new(**opts)
+      @srv = new_rpc_server_for_testing(**opts)
       @srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
     end
 
@@ -224,7 +232,7 @@ describe GRPC::RpcServer do
       opts = {
         server_args: { a_channel_arg: 'an_arg' }
       }
-      r = RpcServer.new(**opts)
+      r = new_rpc_server_for_testing(**opts)
       expect(r.running?).to be(false)
     end
 
@@ -233,7 +241,7 @@ describe GRPC::RpcServer do
         server_args: { a_channel_arg: 'an_arg' },
         poll_period: 2
       }
-      r = RpcServer.new(**opts)
+      r = new_rpc_server_for_testing(**opts)
       r.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
       expect { r.run }.to raise_error(RuntimeError)
     end
@@ -243,7 +251,7 @@ describe GRPC::RpcServer do
         server_args: { a_channel_arg: 'an_arg' },
         poll_period: 2.5
       }
-      r = RpcServer.new(**opts)
+      r = new_rpc_server_for_testing(**opts)
       r.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
       r.handle(EchoService)
       t = Thread.new { r.run }
@@ -257,7 +265,7 @@ describe GRPC::RpcServer do
   describe '#handle' do
     before(:each) do
       @opts = { server_args: { a_channel_arg: 'an_arg' }, poll_period: 1 }
-      @srv = RpcServer.new(**@opts)
+      @srv = new_rpc_server_for_testing(**@opts)
       @srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
     end
 
@@ -303,7 +311,7 @@ describe GRPC::RpcServer do
         server_opts = {
           poll_period: 1
         }
-        @srv = RpcServer.new(**server_opts)
+        @srv = new_rpc_server_for_testing(**server_opts)
         server_port = @srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
         @host = "localhost:#{server_port}"
         @ch = GRPC::Core::Channel.new(@host, nil, :this_channel_is_insecure)
@@ -340,6 +348,28 @@ describe GRPC::RpcServer do
         end
         @srv.stop
         t.join
+      end
+
+      it 'should return UNIMPLEMENTED on unimplemented ' \
+         'methods for client_streamer', server: true do
+        @srv.handle(EchoService)
+        t = Thread.new { @srv.run }
+        @srv.wait_till_running
+        blk = proc do
+          stub = EchoStub.new(@host, :this_channel_is_insecure, **client_opts)
+          requests = [EchoMsg.new, EchoMsg.new]
+          stub.a_client_streaming_rpc_unimplemented(requests)
+        end
+
+        begin
+          expect(&blk).to raise_error do |error|
+            expect(error).to be_a(GRPC::BadStatus)
+            expect(error.code).to eq(GRPC::Core::StatusCodes::UNIMPLEMENTED)
+          end
+        ensure
+          @srv.stop # should be call not to crash
+          t.join
+        end
       end
 
       it 'should handle multiple sequential requests', server: true do
@@ -384,6 +414,23 @@ describe GRPC::RpcServer do
         expect(resp).to be_a(EchoMsg)
         wanted_md = [{ 'k1' => 'v1', 'k2' => 'v2' }]
         check_md(wanted_md, service.received_md)
+        @srv.stop
+        t.join
+      end
+
+      it 'should raise DeadlineExceeded', server: true do
+        service = SlowService.new
+        @srv.handle(service)
+        t = Thread.new { @srv.run }
+        @srv.wait_till_running
+        req = EchoMsg.new
+        stub = SlowStub.new(@host, :this_channel_is_insecure, **client_opts)
+        timeout = service.delay - 0.1
+        deadline = GRPC::Core::TimeConsts.from_relative_time(timeout)
+        responses = stub.a_server_streaming_rpc(req,
+                                                deadline: deadline,
+                                                metadata: { k1: 'v1', k2: 'v2' })
+        expect { responses.to_a }.to raise_error(GRPC::DeadlineExceeded)
         @srv.stop
         t.join
       end
@@ -474,7 +521,7 @@ describe GRPC::RpcServer do
           poll_period: 1,
           max_waiting_requests: 1
         }
-        alt_srv = RpcServer.new(**opts)
+        alt_srv = new_rpc_server_for_testing(**opts)
         alt_srv.handle(SlowService)
         alt_port = alt_srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
         alt_host = "0.0.0.0:#{alt_port}"
@@ -500,7 +547,7 @@ describe GRPC::RpcServer do
         expect(one_failed_as_unavailable).to be(true)
       end
 
-      it 'should send a status UNKNOWN with a relevant message when the' \
+      it 'should send a status UNKNOWN with a relevant message when the ' \
         'servers response stream is not an enumerable' do
         @srv.handle(BidiService)
         t = Thread.new { @srv.run }
@@ -515,10 +562,9 @@ describe GRPC::RpcServer do
         end
         # Erroneous responses sent from the server handler should cause an
         # exception on the client with relevant info.
-        expected_details = 'NoMethodError: undefined method `each\' for '\
-          '"bad response. (not an enumerable, client sees an error)"'
+        expected_details = /NoMethodError: undefined method [`']each'/
 
-        expect(exception.inspect.include?(expected_details)).to be true
+        expect(exception.inspect).to match(expected_details)
         @srv.stop
         t.join
       end
@@ -538,7 +584,7 @@ describe GRPC::RpcServer do
           poll_period: 1,
           connect_md_proc: test_md_proc
         }
-        @srv = RpcServer.new(**server_opts)
+        @srv = new_rpc_server_for_testing(**server_opts)
         alt_port = @srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
         @alt_host = "0.0.0.0:#{alt_port}"
       end
@@ -560,7 +606,7 @@ describe GRPC::RpcServer do
           'connect_k1' => 'connect_v1'
         }
         wanted_md.each do |key, value|
-          puts "key: #{key}"
+          GRPC.logger.info("key: #{key}")
           expect(op.metadata[key]).to eq(value)
         end
         @srv.stop
@@ -573,7 +619,7 @@ describe GRPC::RpcServer do
         server_opts = {
           poll_period: 1
         }
-        @srv = RpcServer.new(**server_opts)
+        @srv = new_rpc_server_for_testing(**server_opts)
         alt_port = @srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
         @alt_host = "0.0.0.0:#{alt_port}"
       end
@@ -624,7 +670,7 @@ describe GRPC::RpcServer do
         server_opts = {
           poll_period: 1
         }
-        @srv = RpcServer.new(**server_opts)
+        @srv = new_rpc_server_for_testing(**server_opts)
         alt_port = @srv.add_http2_port('0.0.0.0:0', :this_port_is_insecure)
         @alt_host = "0.0.0.0:#{alt_port}"
 
@@ -646,9 +692,9 @@ describe GRPC::RpcServer do
       def check_multi_req_view_of_finished_call(call)
         common_check_of_finished_server_call(call)
 
-        expect do
-          call.each_remote_read.each { |r| p r }
-        end.to raise_error(GRPC::Core::CallError)
+        l = []
+        call.each_remote_read.each { |r| l << r }
+        expect(l.size).to eq(0)
       end
 
       def common_check_of_finished_server_call(call)

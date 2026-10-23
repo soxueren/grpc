@@ -1,39 +1,47 @@
-/*
- *
- * Copyright 2016 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2016 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
-#include <grpc++/channel.h>
-#include <grpc++/client_context.h>
-#include <grpc++/create_channel.h>
-#include <grpc++/ext/proto_server_reflection_plugin.h>
-#include <grpc++/security/credentials.h>
-#include <grpc++/security/server_credentials.h>
-#include <grpc++/server.h>
-#include <grpc++/server_builder.h>
-#include <grpc++/server_context.h>
 #include <grpc/grpc.h>
+#include <grpc/reflection/v1/reflection.grpc.pb.h>
+#include <grpc/reflection/v1/reflection.pb.h>
+#include <grpc/reflection/v1alpha/reflection.grpc.pb.h>
+#include <grpc/reflection/v1alpha/reflection.pb.h>
+#include <grpcpp/channel.h>
+#include <grpcpp/client_context.h>
+#include <grpcpp/create_channel.h>
+#include <grpcpp/ext/proto_server_reflection_plugin.h>
+#include <grpcpp/security/credentials.h>
+#include <grpcpp/security/server_credentials.h>
+#include <grpcpp/server.h>
+#include <grpcpp/server_builder.h>
+#include <grpcpp/server_context.h>
+#include <grpcpp/support/channel_arguments.h>
+
+#include <memory>
+#include <vector>
 
 #include "src/proto/grpc/testing/echo.grpc.pb.h"
-#include "test/core/util/port.h"
-#include "test/core/util/test_config.h"
-#include "test/cpp/end2end/test_service_impl.h"
+#include "test/core/test_util/port.h"
+#include "test/core/test_util/test_config.h"
+#include "test/cpp/end2end/end2end_test_utils.h"
 #include "test/cpp/util/proto_reflection_descriptor_database.h"
-
-#include <gtest/gtest.h>
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 
 namespace grpc {
 namespace testing {
@@ -47,18 +55,20 @@ class ProtoServerReflectionTest : public ::testing::Test {
     ref_desc_pool_ = protobuf::DescriptorPool::generated_pool();
 
     ServerBuilder builder;
-    grpc::string server_address = "localhost:" + to_string(port_);
+    std::string server_address = "localhost:" + to_string(port_);
     builder.AddListeningPort(server_address, InsecureServerCredentials());
     server_ = builder.BuildAndStart();
   }
 
   void ResetStub() {
     string target = "dns:localhost:" + to_string(port_);
-    std::shared_ptr<Channel> channel =
-        CreateChannel(target, InsecureChannelCredentials());
-    stub_ = grpc::testing::EchoTestService::NewStub(channel);
-    desc_db_.reset(new ProtoReflectionDescriptorDatabase(channel));
-    desc_pool_.reset(new protobuf::DescriptorPool(desc_db_.get()));
+    ChannelArguments args;
+    ApplyCommonChannelArguments(args);
+    channel_ =
+        grpc::CreateCustomChannel(target, InsecureChannelCredentials(), args);
+    stub_ = grpc::testing::EchoTestService::NewStub(channel_);
+    desc_db_ = std::make_unique<ProtoReflectionDescriptorDatabase>(channel_);
+    desc_pool_ = std::make_unique<protobuf::DescriptorPool>(desc_db_.get());
   }
 
   string to_string(const int number) {
@@ -67,7 +77,7 @@ class ProtoServerReflectionTest : public ::testing::Test {
     return strs.str();
   }
 
-  void CompareService(const grpc::string& service) {
+  void CompareService(const std::string& service) {
     const protobuf::ServiceDescriptor* service_desc =
         desc_pool_->FindServiceByName(service);
     const protobuf::ServiceDescriptor* ref_service_desc =
@@ -77,19 +87,21 @@ class ProtoServerReflectionTest : public ::testing::Test {
     EXPECT_EQ(service_desc->DebugString(), ref_service_desc->DebugString());
 
     const protobuf::FileDescriptor* file_desc = service_desc->file();
-    if (known_files_.find(file_desc->package() + "/" + file_desc->name()) !=
+    if (known_files_.find(std::string(file_desc->package()) + "/" +
+                          std::string(file_desc->name())) !=
         known_files_.end()) {
       EXPECT_EQ(file_desc->DebugString(),
                 ref_service_desc->file()->DebugString());
-      known_files_.insert(file_desc->package() + "/" + file_desc->name());
+      known_files_.insert(std::string(file_desc->package()) + "/" +
+                          std::string(file_desc->name()));
     }
 
     for (int i = 0; i < service_desc->method_count(); ++i) {
-      CompareMethod(service_desc->method(i)->full_name());
+      CompareMethod(std::string(service_desc->method(i)->full_name()));
     }
   }
 
-  void CompareMethod(const grpc::string& method) {
+  void CompareMethod(const std::string& method) {
     const protobuf::MethodDescriptor* method_desc =
         desc_pool_->FindMethodByName(method);
     const protobuf::MethodDescriptor* ref_method_desc =
@@ -98,11 +110,11 @@ class ProtoServerReflectionTest : public ::testing::Test {
     EXPECT_TRUE(ref_method_desc != nullptr);
     EXPECT_EQ(method_desc->DebugString(), ref_method_desc->DebugString());
 
-    CompareType(method_desc->input_type()->full_name());
-    CompareType(method_desc->output_type()->full_name());
+    CompareType(std::string(method_desc->input_type()->full_name()));
+    CompareType(std::string(method_desc->output_type()->full_name()));
   }
 
-  void CompareType(const grpc::string& type) {
+  void CompareType(const std::string& type) {
     if (known_types_.find(type) != known_types_.end()) {
       return;
     }
@@ -115,8 +127,18 @@ class ProtoServerReflectionTest : public ::testing::Test {
     EXPECT_EQ(desc->DebugString(), ref_desc->DebugString());
   }
 
+  template <typename Response>
+  std::vector<std::string> ServicesFromResponse(const Response& response) {
+    std::vector<std::string> services;
+    for (const auto& service : response.list_services_response().service()) {
+      services.emplace_back(service.name());
+    }
+    return services;
+  }
+
  protected:
   std::unique_ptr<Server> server_;
+  std::shared_ptr<Channel> channel_;
   std::unique_ptr<grpc::testing::EchoTestService::Stub> stub_;
   std::unique_ptr<ProtoReflectionDescriptorDatabase> desc_db_;
   std::unique_ptr<protobuf::DescriptorPool> desc_pool_;
@@ -130,21 +152,79 @@ class ProtoServerReflectionTest : public ::testing::Test {
 TEST_F(ProtoServerReflectionTest, CheckResponseWithLocalDescriptorPool) {
   ResetStub();
 
-  std::vector<grpc::string> services;
+  std::vector<std::string> services;
   desc_db_->GetServices(&services);
-  // The service list has at least one service (reflection servcie).
-  EXPECT_TRUE(services.size() > 0);
+  // The service list has at least one service (reflection service).
+  EXPECT_TRUE(!services.empty());
 
   for (auto it = services.begin(); it != services.end(); ++it) {
     CompareService(*it);
   }
 }
 
+TEST_F(ProtoServerReflectionTest, V1AlphaApiInstalled) {
+  SKIP_TEST_FOR_PH2_CLIENT(
+      "TODO(tjagtap) [PH2][P3][Client] Fix memory leak. The leak is flaky "
+      "(4/10 times)");
+  ResetStub();
+  using Service = reflection::v1alpha::ServerReflection;
+  using Request = reflection::v1alpha::ServerReflectionRequest;
+  using Response = reflection::v1alpha::ServerReflectionResponse;
+  Service::Stub stub(channel_);
+  ClientContext context;
+  auto reader_writer = stub.ServerReflectionInfo(&context);
+  Request request;
+  request.set_list_services("*");
+  reader_writer->Write(request);
+  Response response;
+  ASSERT_EQ(reader_writer->Read(&response), true);
+  EXPECT_THAT(ServicesFromResponse(response),
+              ::testing::UnorderedElementsAre(
+                  reflection::v1alpha::ServerReflection::service_full_name(),
+                  reflection::v1::ServerReflection::service_full_name()));
+  request = Request::default_instance();
+  request.set_file_containing_symbol(Service::service_full_name());
+  reader_writer->WriteLast(request, WriteOptions());
+  response = Response::default_instance();
+  ASSERT_EQ(reader_writer->Read(&response), true);
+  EXPECT_EQ(response.file_descriptor_response().file_descriptor_proto_size(), 1)
+      << response.DebugString();
+}
+
+TEST_F(ProtoServerReflectionTest, V1ApiInstalled) {
+  SKIP_TEST_FOR_PH2_CLIENT(
+      "TODO(tjagtap) [PH2][P3][Client] Fix memory leak. The leak is flaky "
+      "(3/10 times)");
+  ResetStub();
+  using Service = reflection::v1::ServerReflection;
+  using Request = reflection::v1::ServerReflectionRequest;
+  using Response = reflection::v1::ServerReflectionResponse;
+  Service::Stub stub(channel_);
+  ClientContext context;
+  auto reader_writer = stub.ServerReflectionInfo(&context);
+  Request request;
+  request.set_list_services("*");
+  reader_writer->Write(request);
+  Response response;
+  ASSERT_TRUE(reader_writer->Read(&response));
+  EXPECT_THAT(ServicesFromResponse(response),
+              ::testing::UnorderedElementsAre(
+                  reflection::v1alpha::ServerReflection::service_full_name(),
+                  reflection::v1::ServerReflection::service_full_name()));
+  request = Request::default_instance();
+  request.set_file_containing_symbol(Service::service_full_name());
+  reader_writer->WriteLast(request, WriteOptions());
+  response = Response::default_instance();
+  ASSERT_TRUE(reader_writer->Read(&response));
+  EXPECT_EQ(response.file_descriptor_response().file_descriptor_proto_size(), 1)
+      << response.DebugString();
+}
+
 }  // namespace testing
 }  // namespace grpc
 
 int main(int argc, char** argv) {
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(&argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

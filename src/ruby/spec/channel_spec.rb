@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-require 'grpc'
+require 'spec_helper'
+require 'English'
 
 def load_test_certs
   test_root = File.join(File.dirname(__FILE__), 'testdata')
@@ -30,7 +31,7 @@ describe GRPC::Core::Channel do
   shared_examples '#new' do
     it 'take a host name without channel args' do
       blk = proc do
-        GRPC::Core::Channel.new('dummy_host', nil, :this_channel_is_insecure)
+        GRPC::Core::Channel.new('phony_host', nil, :this_channel_is_insecure)
       end
       expect(&blk).not_to raise_error
     end
@@ -83,7 +84,7 @@ describe GRPC::Core::Channel do
 
   describe '#new for secure channels' do
     def construct_with_args(a)
-      proc { GRPC::Core::Channel.new('dummy_host', a, create_test_cert) }
+      proc { GRPC::Core::Channel.new('phony_host', a, create_test_cert) }
     end
 
     it_behaves_like '#new'
@@ -94,7 +95,18 @@ describe GRPC::Core::Channel do
 
     def construct_with_args(a)
       proc do
-        GRPC::Core::Channel.new('dummy_host', a, :this_channel_is_insecure)
+        GRPC::Core::Channel.new('phony_host', a, :this_channel_is_insecure)
+      end
+    end
+  end
+
+  describe '#new for XDS channels' do
+    it_behaves_like '#new'
+
+    def construct_with_args(a)
+      proc do
+        xds_creds = GRPC::Core::XdsChannelCredentials.new(create_test_cert)
+        GRPC::Core::Channel.new('dummy_host', a, xds_creds)
       end
     end
   end
@@ -106,20 +118,27 @@ describe GRPC::Core::Channel do
       deadline = Time.now + 5
 
       blk = proc do
-        ch.create_call(nil, nil, 'dummy_method', nil, deadline)
+        call = ch.create_call(nil, nil, 'phony_method', nil, deadline)
+        call.close
       end
       expect(&blk).to_not raise_error
     end
 
     it 'raises an error if called on a closed channel' do
+      STDERR.puts "#{Time.now}: begin: raises an error if called on a closed channel"
       ch = GRPC::Core::Channel.new(fake_host, nil, :this_channel_is_insecure)
+      STDERR.puts "#{Time.now}: created channel"
       ch.close
+      STDERR.puts "#{Time.now}: closed channel"
 
       deadline = Time.now + 5
       blk = proc do
-        ch.create_call(nil, nil, 'dummy_method', nil, deadline)
+        call = ch.create_call(nil, nil, 'phony_method', nil, deadline)
+        STDERR.puts "#{Time.now}: created call"
+        call.close
       end
       expect(&blk).to raise_error(RuntimeError)
+      STDERR.puts "#{Time.now}: finished: raises an error if called on a closed channel"
     end
   end
 

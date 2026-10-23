@@ -19,7 +19,7 @@
 
 set -ex
 
-cd $(dirname $0)
+cd "$(dirname "$0")"
 
 CLOUD_PROJECT=grpc-testing
 ZONE=us-central1-b
@@ -31,10 +31,10 @@ else
   INSTANCE_NAME="${USER}-windows-kokoro-debug1"
 fi
 
-MACHINE_TYPE=n1-standard-8
+MACHINE_TYPE=e2-standard-8
 TMP_DISK_NAME="$INSTANCE_NAME-temp-disk"
 
-gcloud compute disks create $TMP_DISK_NAME \
+gcloud compute disks create "$TMP_DISK_NAME" \
     --project="$CLOUD_PROJECT" \
     --zone "$ZONE" \
     --image-project google.com:kokoro \
@@ -44,13 +44,14 @@ gcloud compute disks create $TMP_DISK_NAME \
 echo 'Created scratch disk, waiting for it to become available.'
 sleep 15
 
-gcloud compute instances create $INSTANCE_NAME \
+# The image version might need updating.
+gcloud compute instances create "$INSTANCE_NAME" \
     --project="$CLOUD_PROJECT" \
     --zone "$ZONE" \
-    --machine-type $MACHINE_TYPE \
+    --machine-type "$MACHINE_TYPE" \
     --image-project google.com:kokoro \
-    --image kokoro-win7build-v9-prod-debug \
+    --image kokoro-winserver2016-v2m-prod-debug \
     --boot-disk-size 500 \
     --boot-disk-type pd-ssd \
     --tags=allow-ssh \
-    --disk auto-delete=yes,boot=no,name=$TMP_DISK_NAME
+    --disk "auto-delete=yes,boot=no,name=$TMP_DISK_NAME"

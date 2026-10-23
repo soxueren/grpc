@@ -20,24 +20,25 @@ from grpc._cython import cygrpc
 
 RPC_COUNT = 4000
 
-INFINITE_FUTURE = cygrpc.Timespec(float('+inf'))
 EMPTY_FLAGS = 0
 
-INVOCATION_METADATA = cygrpc.Metadata(
-    (cygrpc.Metadatum(b'client-md-key', b'client-md-key'),
-     cygrpc.Metadatum(b'client-md-key-bin', b'\x00\x01' * 3000),))
+INVOCATION_METADATA = (
+    ("client-md-key", "client-md-key"),
+    ("client-md-key-bin", b"\x00\x01" * 3000),
+)
 
-INITIAL_METADATA = cygrpc.Metadata(
-    (cygrpc.Metadatum(b'server-initial-md-key', b'server-initial-md-value'),
-     cygrpc.Metadatum(b'server-initial-md-key-bin', b'\x00\x02' * 3000),))
+INITIAL_METADATA = (
+    ("server-initial-md-key", "server-initial-md-value"),
+    ("server-initial-md-key-bin", b"\x00\x02" * 3000),
+)
 
-TRAILING_METADATA = cygrpc.Metadata(
-    (cygrpc.Metadatum(b'server-trailing-md-key', b'server-trailing-md-value'),
-     cygrpc.Metadatum(b'server-trailing-md-key-bin', b'\x00\x03' * 3000),))
+TRAILING_METADATA = (
+    ("server-trailing-md-key", "server-trailing-md-value"),
+    ("server-trailing-md-key-bin", b"\x00\x03" * 3000),
+)
 
 
-class QueueDriver(object):
-
+class QueueDriver:
     def __init__(self, condition, completion_queue):
         self._condition = condition
         self._completion_queue = completion_queue
@@ -78,41 +79,54 @@ def execute_many_times(behavior):
 
 
 class OperationResult(
-        collections.namedtuple('OperationResult', (
-            'start_batch_result', 'completion_type', 'success',))):
+    collections.namedtuple(
+        "OperationResult",
+        (
+            "start_batch_result",
+            "completion_type",
+            "success",
+        ),
+    )
+):
     pass
 
 
 SUCCESSFUL_OPERATION_RESULT = OperationResult(
-    cygrpc.CallError.ok, cygrpc.CompletionType.operation_complete, True)
+    cygrpc.CallError.ok, cygrpc.CompletionType.operation_complete, True
+)
 
 
-class RpcTest(object):
-
+class RpcTest:
     def setUp(self):
         self.server_completion_queue = cygrpc.CompletionQueue()
-        self.server = cygrpc.Server(cygrpc.ChannelArgs([]))
+        self.server = cygrpc.Server([(b"grpc.so_reuseport", 0)], False)
         self.server.register_completion_queue(self.server_completion_queue)
-        port = self.server.add_http2_port(b'[::]:0')
+        port = self.server.add_http2_port(b"[::]:0")
         self.server.start()
-        self.channel = cygrpc.Channel('localhost:{}'.format(port).encode(),
-                                      cygrpc.ChannelArgs([]))
+        self.channel = cygrpc.Channel(
+            "localhost:{}".format(port).encode(), [], None
+        )
 
-        self._server_shutdown_tag = 'server_shutdown_tag'
+        self._server_shutdown_tag = "server_shutdown_tag"
         self.server_condition = threading.Condition()
-        self.server_driver = QueueDriver(self.server_condition,
-                                         self.server_completion_queue)
+        self.server_driver = QueueDriver(
+            self.server_condition, self.server_completion_queue
+        )
         with self.server_condition:
-            self.server_driver.add_due({
-                self._server_shutdown_tag,
-            })
+            self.server_driver.add_due(
+                {
+                    self._server_shutdown_tag,
+                }
+            )
 
         self.client_condition = threading.Condition()
         self.client_completion_queue = cygrpc.CompletionQueue()
-        self.client_driver = QueueDriver(self.client_condition,
-                                         self.client_completion_queue)
+        self.client_driver = QueueDriver(
+            self.client_condition, self.client_completion_queue
+        )
 
     def tearDown(self):
-        self.server.shutdown(self.server_completion_queue,
-                             self._server_shutdown_tag)
+        self.server.shutdown(
+            self.server_completion_queue, self._server_shutdown_tag
+        )
         self.server.cancel_all_calls()

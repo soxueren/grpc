@@ -1,22 +1,33 @@
 # C/C++ build outputs
 .build/
+build/
 bins
 gens
 libs
 objs
 
 # Python items
-cython_debug/
-python_build/
-yapf_virtual_environment/
-python_pylint_venv/
 .coverage*
 .eggs
-htmlcov/
-dist/
+.pytype
 *.egg
-py27/
-py3[0-9]*/
+*.egg-info
+a.out
+cython_debug/
+dist/
+htmlcov/
+py3*/
+pyb/
+src/python/grpcio_*/=*
+src/python/grpcio_*/build/
+src/python/grpcio_*/LICENSE
+src/python/grpcio_status/grpc_status/google/rpc/status.proto
+.venv
+# TODO(sergiitk): conform all "named" virtual environments to .venv-*
+.venv-*
+python_pylint_venv/
+black_virtual_environment/
+isort_virtual_environment/
 
 # Node installation output
 node_modules
@@ -47,6 +58,7 @@ coverage
 
 # vim temp files
 .*.swp
+.*.swo
 
 # Makefile's cache
 cache.mk
@@ -56,6 +68,8 @@ Gemfile.lock
 
 # Temporary test reports
 report.xml
+*/sponge_log.xml
+*/success_log_to_rename.xml
 latency_trace.txt
 latency_trace.*.txt
 
@@ -88,14 +102,18 @@ DerivedData
 *.xcuserstate
 *.DS_Store
 
+# Swift Package Manager files
+Package.resolved
+
 # Objective-C generated files
 *.pbobjc.*
 *.pbrpc.*
+src/objective-c/**/Build
 
 # Cocoapods artifacts
-# Podfile.lock and the workspace file are tracked, to ease deleting them. That's
-# needed to trigger "pod install" to rerun the preinstall commands.
 Pods/
+Podfile.lock
+*.xcworkspace
 
 # Artifacts directory
 /artifacts/
@@ -106,12 +124,16 @@ Pods/
 # IDE specific folder for JetBrains IDEs
 .idea/
 
-# Blaze files
-bazel-bin
-bazel-genfiles
-bazel-grpc
-bazel-out
-bazel-testlogs
+# Bazel files
+bazel-*
+bazel_format_virtual_environment/
+tools/bazel-*
+.bazel_rbe
+
+# Bazel wrapper
+bazel_wrapper
+bazel_wrapper.bat
+bazel_wrapper.bazelrc
 
 # Debug output
 gdb.txt
@@ -120,11 +142,46 @@ gdb.txt
 tags
 
 # perf data
+memory_usage.csv
 perf.data
 perf.data.old
 
 # bm_diff
-bm_diff_new/
-bm_diff_old/
-bm_*.json
+bloat_diff_new/
+bloat_diff_old/
+bloaty-build/
 
+# cmake build files
+**/cmake/build/
+
+# Visual Studio Code artifacts
+.cache/*
+.vscode/*
+.history/
+
+# Clion artifacts
+cmake-build-debug/
+
+# Benchmark outputs
+BenchmarkDotNet.Artifacts/
+
+# pyenv config
+.python-version
+
+# clang JSON compilation database file
+compile_commands.json
+
+# IWYU byproducts
+compile_commands_for_iwyu.json
+iwyu.out
+iwyu_files.txt
+iwyu_files0.txt
+iwyu/
+iwyu_build/
+
+# fuzzer logs
+fuzz-*.log
+
+# bazel module files
+third_party/**/MODULE.bazel
+MODULE.bazel.lock

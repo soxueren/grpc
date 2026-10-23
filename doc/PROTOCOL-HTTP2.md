@@ -1,10 +1,10 @@
 # gRPC over HTTP2
 
 ## Introduction
-This document serves as a detailed description for an implementation of gRPC carried over HTTP2 draft 17 framing. It assumes familiarity with the HTTP2 specification.
+This document serves as a detailed description for an implementation of gRPC carried over <a href="https://tools.ietf.org/html/rfc7540">HTTP2 framing</a>. It assumes familiarity with the HTTP2 specification.
 
 ## Protocol
-Production rules are using <a href="http://tools.ietf.org/html/rfc5234">ABNF syntax</a>.
+Production rules are using <a href="https://tools.ietf.org/html/rfc5234">ABNF syntax</a>.
 
 ### Outline
 
@@ -21,22 +21,22 @@ The following is the general sequence of message atoms in a GRPC request & respo
 Request-Headers are delivered as HTTP2 headers in HEADERS + CONTINUATION frames.
 
 * **Request-Headers** → Call-Definition \*Custom-Metadata
-* **Call-Definition** → Method Scheme Path TE [Authority] [Timeout] Content-Type [Message-Type] [Message-Encoding] [Message-Accept-Encoding] [User-Agent]
+* **Call-Definition** → Method Scheme Path [Authority] TE [Timeout] Content-Type [Message-Type] [Message-Encoding] [Message-Accept-Encoding] [User-Agent]
 * **Method** →  ":method POST"
 * **Scheme** → ":scheme "  ("http" / "https")
-* **Path** → ":path" "/" Service-Name "/" {_method name_}
+* **Path** → ":path" "/" Service-Name "/" {_method name_}  ; But see note below.
 * **Service-Name** → {_IDL-specific service name_}
 * **Authority** → ":authority" {_virtual host name of authority_}
-* **TE** → "te" "trailers"  # Used to detect incompatible proxies
+* **TE** → "te" "trailers"  ; Used to detect incompatible proxies
 * **Timeout** → "grpc-timeout" TimeoutValue TimeoutUnit
 * **TimeoutValue** → {_positive integer as ASCII string of at most 8 digits_}
 * **TimeoutUnit** → Hour / Minute / Second / Millisecond / Microsecond / Nanosecond
-* **Hour** → "H"
-* **Minute** → "M"
-* **Second** → "S"
-* **Millisecond** → "m"
-* **Microsecond** → "u"
-* **Nanosecond** → "n"
+  * **Hour** → "H"
+  * **Minute** → "M"
+  * **Second** → "S"
+  * **Millisecond** → "m"
+  * **Microsecond** → "u"
+  * **Nanosecond** → "n"
 * **Content-Type** → "content-type" "application/grpc" [("+proto" / "+json" / {_custom_})]
 * **Content-Coding** → "identity" / "gzip" / "deflate" / "snappy" / {_custom_}
 * <a name="message-encoding"></a>**Message-Encoding** → "grpc-encoding" Content-Coding
@@ -52,14 +52,16 @@ Request-Headers are delivered as HTTP2 headers in HEADERS + CONTINUATION frames.
 
 HTTP2 requires that reserved headers, ones starting with ":" appear before all other headers. Additionally implementations should send **Timeout** immediately after the reserved headers and they should send the **Call-Definition** headers before sending **Custom-Metadata**.
 
-Some gRPC implementations may allow the **Path** format shown above
-to be overridden, but this functionality is strongly discouraged.
-gRPC does not go out of its way to break users that are using this kind
-of override, but we do not actively support it, and some functionality
-(e.g., service config support) will not work when the path is not of
-the form shown above.
+**Path** is case-sensitive. Some gRPC implementations may allow the **Path**
+format shown above to be overridden, but this functionality is strongly
+discouraged. gRPC does not go out of its way to break users that are using this
+kind of override, but we do not actively support it, and some functionality
+(e.g., service config support) will not work when the path is not of the form
+shown above.
 
 If **Timeout** is omitted a server should assume an infinite timeout. Client implementations are free to send a default minimum timeout based on their deployment requirements.
+
+If **Content-Type** does not begin with "application/grpc", gRPC servers SHOULD respond with HTTP status of 415 (Unsupported Media Type).  This will prevent other HTTP/2 clients from interpreting a gRPC error response, which uses status 200 (OK), as successful.
 
 **Custom-Metadata** is an arbitrary set of key-value pairs defined by the application layer. Header names starting with "grpc-" but not listed here are reserved for future GRPC use and should not be used by applications as **Custom-Metadata**.
 
@@ -73,7 +75,7 @@ Base64-encoded values.
 
 **ASCII-Value** should not have leading or trailing whitespace. If it contains
 leading or trailing whitespace, it may be stripped. The **ASCII-Value**
-character range defined is more strict than HTTP. Implementations must not error
+character range defined is stricter than HTTP. Implementations must not error
 due to receiving an invalid **ASCII-Value** that's a valid **field-value** in
 HTTP, but the precise behavior is not strictly defined: they may throw the value
 away or accept the value. If accepted, care must be taken to make sure that the
@@ -91,8 +93,8 @@ binary values' lengths being post-Base64.
 The repeated sequence of **Length-Prefixed-Message** items is delivered in DATA frames
 
 * **Length-Prefixed-Message** → Compressed-Flag Message-Length Message
-* <a name="compressed-flag"></a>**Compressed-Flag** → 0 / 1   # encoded as 1 byte unsigned integer
-* **Message-Length** → {_length of Message_}  # encoded as 4 byte unsigned integer
+* <a name="compressed-flag"></a>**Compressed-Flag** → 0 / 1   ; encoded as 1 byte unsigned integer
+* **Message-Length** → {_length of Message_}  ; encoded as 4 byte unsigned integer (big endian)
 * **Message** → \*{binary octet}
 
 A **Compressed-Flag** value of 1 indicates that the binary octet sequence of **Message** is compressed using the mechanism declared by the **Message-Encoding** header. A value of 0 indicates that no encoding of **Message** bytes has occurred. Compression contexts are NOT maintained over message boundaries, implementations must create a new context for each message in the stream. If the **Message-Encoding** header is omitted then the **Compressed-Flag** must be 0.
@@ -104,10 +106,11 @@ For requests, **EOS** (end-of-stream) is indicated by the presence of the END_ST
 * **Response** → (Response-Headers \*Length-Prefixed-Message Trailers) / Trailers-Only
 * **Response-Headers** → HTTP-Status [Message-Encoding] [Message-Accept-Encoding] Content-Type \*Custom-Metadata
 * **Trailers-Only** → HTTP-Status Content-Type Trailers
-* **Trailers** → Status [Status-Message] \*Custom-Metadata
+* **Trailers** → Status [Status-Message] [Status-Details] \*Custom-Metadata
 * **HTTP-Status** → ":status 200"
 * **Status** → "grpc-status" 1\*DIGIT ; 0-9
 * **Status-Message** → "grpc-message" Percent-Encoded
+* **Status-Details** → "grpc-status-details-bin" {base64 encoded value} ; See notes below.
 * **Percent-Encoded** → 1\*(Percent-Byte-Unencoded / Percent-Byte-Encoded)
 * **Percent-Byte-Unencoded** → 1\*( %x20-%x24 / %x26-%x7E ) ; space and VCHAR, except %
 * **Percent-Byte-Encoded** → "%" 2HEXDIGIT ; 0-9 A-F
@@ -135,6 +138,11 @@ user would received the raw percent-encoded form. Alternatively, the
 implementation can decode valid portions while leaving broken %-encodings as-is
 or replacing them with a replacement character (e.g., '?' or the Unicode
 replacement character).
+
+**Status-Details** is allowed only if **Status** is not OK. If it is set, it
+contains additional information about the RPC error. If it contains a status
+code field, it MUST NOT contradict the **Status** header. The consumer MUST
+verify this requirement.
 
 #### Example
 
@@ -170,6 +178,7 @@ HEADERS (flags = END_STREAM, END_HEADERS)
 grpc-status = 0 # OK
 trace-proto-bin = jher831yy13JHy3hc
 ```
+
 #### User Agents
 
 While the protocol does not require a user-agent to function it is recommended that clients provide a structured user-agent string that provides a basic description of the calling library, version & platform to facilitate issue diagnosis in heterogeneous environments. The following structure is recommended to library developers
@@ -190,14 +199,14 @@ grpc-java-android/0.9.1 (gingerbread/1.2.4; nexus5; tmobile)
 Unless explicitly defined to be, gRPC Calls are not assumed to be idempotent.  Specifically:
 
 * Calls that cannot be proven to have started will not be retried.
-* There is no mechanisim for duplicate suppression as it is not necessary.
+* There is no mechanism for duplicate suppression as it is not necessary.
 * Calls that are marked as idempotent may be sent multiple times.
 
 
 #### HTTP2 Transport Mapping
 
 ##### Stream Identification
-All GRPC calls need to specify an internal ID. We will use HTTP2 stream-ids as call identifiers in this scheme. NOTE: These id’s are contextual to an open HTTP2 session and will not be unique within a given process that is handling more than one HTTP2 session nor can they be used as GUIDs.
+All GRPC calls need to specify an internal ID. We will use HTTP2 stream-ids as call identifiers in this scheme. NOTE: These ids are contextual to an open HTTP2 session and will not be unique within a given process that is handling more than one HTTP2 session nor can they be used as GUIDs.
 
 ##### Data Frames
 DATA frame boundaries have no relation to **Length-Prefixed-Message** boundaries and implementations should make no assumptions about their alignment.
@@ -212,7 +221,7 @@ The following mapping from RST_STREAM error codes to GRPC error codes is applied
 
 HTTP2 Code|GRPC Code
 ----------|-----------
-NO_ERROR(0)|INTERNAL - An explicit GRPC status of OK should have been sent but this might be used to aggressively lameduck in some scenarios.
+NO_ERROR(0)|INTERNAL - An explicit GRPC status of OK should have been sent but this might be used to aggressively [lameduck](https://landing.google.com/sre/sre-book/chapters/load-balancing-datacenter/#identifying-bad-tasks-flow-control-and-lame-ducks-bEs0uy) in some scenarios.
 PROTOCOL_ERROR(1)|INTERNAL
 INTERNAL_ERROR(2)|INTERNAL
 FLOW_CONTROL_ERROR(3)|INTERNAL
@@ -232,6 +241,7 @@ INADEQUATE_SECURITY| PERMISSION_DENIED … with additional detail indicating tha
 The HTTP2 specification mandates the use of TLS 1.2 or higher when TLS is used with HTTP2. It also places some additional constraints on the allowed ciphers in deployments to avoid known-problems as well as requiring SNI support. It is also expected that HTTP2 will be used in conjunction with proprietary transport security mechanisms about which the specification can make no meaningful recommendations.
 
 ##### Connection Management
+
 ###### GOAWAY Frame
 Sent by servers to clients to indicate that they will no longer accept any new streams on the associated connections. This frame includes the id of the last successfully accepted stream by the server. Clients should consider any stream initiated after the last successfully accepted stream as UNAVAILABLE and retry the call elsewhere. Clients are free to continue working with the already accepted streams until they complete or the connection is terminated.
 
@@ -253,5 +263,4 @@ to be used.
 * **Service-Name** → ?( {_proto package name_} "." ) {_service name_}
 * **Message-Type** → {_fully qualified proto message name_}
 * **Content-Type** → "application/grpc+proto"
-
-
+* **Status-Details** → {_google.rpc.Status proto message_}

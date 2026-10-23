@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+
 import grpc
 
 
-class _RequestIterator(object):
-
+class _RequestIterator:
     def __init__(self, rpc, handler):
         self._rpc = rpc
         self._handler = handler
@@ -25,12 +26,11 @@ class _RequestIterator(object):
         read = self._handler.take_request()
         if read.requests_closed:
             raise StopIteration()
-        elif read.terminated:
+        if read.terminated:
             rpc_error = grpc.RpcError()
             self._rpc.add_rpc_error(rpc_error)
             raise rpc_error
-        else:
-            return read.request
+        return read.request
 
     def __iter__(self):
         return self
@@ -59,7 +59,7 @@ def _stream_response(argument, implementation, rpc, servicer_context):
     else:
         while True:
             try:
-                response = next(response_iterator)
+                response = copy.deepcopy(next(response_iterator))
             except StopIteration:
                 rpc.stream_response_complete()
                 break
@@ -80,9 +80,11 @@ def unary_stream(implementation, rpc, request, servicer_context):
 
 def stream_unary(implementation, rpc, handler, servicer_context):
     _unary_response(
-        _RequestIterator(rpc, handler), implementation, rpc, servicer_context)
+        _RequestIterator(rpc, handler), implementation, rpc, servicer_context
+    )
 
 
 def stream_stream(implementation, rpc, handler, servicer_context):
     _stream_response(
-        _RequestIterator(rpc, handler), implementation, rpc, servicer_context)
+        _RequestIterator(rpc, handler), implementation, rpc, servicer_context
+    )

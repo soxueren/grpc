@@ -16,15 +16,16 @@
 set -ex
 
 # change to grpc repo root
-cd $(dirname $0)/../../..
+cd "$(dirname "$0")/../../.."
 
-PYTHON=`realpath "${1:-py27/bin/python}"`
+# TODO(jtattermusch): is the $(pwd) prefix actually useful?
+PYTHON="$(pwd)/${1:-py310/bin/python}"
 
-ROOT=`pwd`
+ROOT=$(pwd)
 
-$PYTHON $ROOT/src/python/grpcio_tests/setup.py test_lite
+# TODO(ssreenithi): find pyproject.toml/pytest equivalent
+$PYTHON "$ROOT/src/python/grpcio_tests/setup.py" "$2"
 
-mkdir -p $ROOT/reports
-rm -rf $ROOT/reports/python-coverage
-(mv -T $ROOT/htmlcov $ROOT/reports/python-coverage) || true
-
+mkdir -p "$ROOT/reports"
+rm -rf "$ROOT/reports/python-coverage"
+(mv -T "$ROOT/htmlcov" "$ROOT/reports/python-coverage") || true

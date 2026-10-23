@@ -16,17 +16,23 @@
 # Create a workspace in a subdirectory to allow running multiple builds in isolation.
 # WORKSPACE_NAME env variable needs to contain name of the workspace to create.
 # All cmdline args will be executed as a command.
+PS4='+ $(date "+[%H:%M:%S %Z]")\011 '
 set -ex
 
-cd $(dirname $0)/../../..
-export repo_root=$(pwd)
+cd "$(dirname "$0")/../../.."
+repo_root=$(pwd)
+export repo_root
+
+# TODO: fix file to pass shellcheck
 
 rm -rf "${WORKSPACE_NAME}"
 git clone . "${WORKSPACE_NAME}"
 # clone gRPC submodules, use data from locally cloned submodules where possible
+# shellcheck disable=SC1004,SC2016
 git submodule foreach 'cd "${repo_root}/${WORKSPACE_NAME}" \
     && git submodule update --init --reference ${repo_root}/${name} ${name}'
 
 echo "Running in workspace ${WORKSPACE_NAME}"
-cd ${WORKSPACE_NAME}
+cd "${WORKSPACE_NAME}"
+# shellcheck disable=SC2068
 $@

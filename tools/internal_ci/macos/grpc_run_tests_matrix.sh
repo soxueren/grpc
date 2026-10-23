@@ -15,23 +15,22 @@
 
 set -ex
 
+# avoid slow finalization after the script has exited.
+source $(dirname $0)/../../../tools/internal_ci/helper_scripts/move_src_tree_and_respawn_itself_rc
+
 # change to grpc repo root
 cd $(dirname $0)/../../..
 
 source tools/internal_ci/helper_scripts/prepare_build_macos_rc
 
+# configure ccache
+source tools/internal_ci/helper_scripts/prepare_ccache_rc
+source tools/internal_ci/helper_scripts/prepare_ccache_symlinks_rc
+
 tools/run_tests/run_tests_matrix.py $RUN_TESTS_FLAGS || FAILED="true"
 
-# kill port_server.py to prevent the build from hanging
+# kill port_server.py to prevent the build from freezing
 ps aux | grep port_server\\.py | awk '{print $2}' | xargs kill -9
-
-# Reveal leftover processes that might be left behind by the build
-ps aux | grep -i kbuilder
-
-# TODO(jtattermusch): better debugging of clock skew, remove once not needed
-date
-
-echo 'Exiting gRPC main test script.'
 
 if [ "$FAILED" != "" ]
 then

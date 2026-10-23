@@ -23,13 +23,13 @@ module Echo
   module EchoServer
     class Service
 
-      include GRPC::GenericService
+      include ::GRPC::GenericService
 
       self.marshal_class_method = :encode
       self.unmarshal_class_method = :decode
       self.service_name = 'echo.EchoServer'
 
-      rpc :Echo, EchoRequest, EchoReply
+      rpc :Echo, ::Echo::EchoRequest, ::Echo::EchoReply
     end
 
     Stub = Service.rpc_stub_class

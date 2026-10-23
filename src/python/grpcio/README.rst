@@ -3,13 +3,14 @@ gRPC Python
 
 Package for gRPC Python.
 
+
 Installation
 ------------
 
 gRPC Python is available for Linux, macOS, and Windows.
 
-From PyPI
-~~~~~~~~~
+Installing From PyPI
+~~~~~~~~~~~~~~~~~~~~
 
 If you are installing locally...
 
@@ -37,8 +38,8 @@ n.b. On Windows and on Mac OS X one *must* have a recent release of :code:`pip`
 to retrieve the proper wheel from PyPI. Be sure to upgrade to the latest
 version!
 
-From Source
-~~~~~~~~~~~
+Installing From Source
+~~~~~~~~~~~~~~~~~~~~~~
 
 Building from source requires that you have the Python headers (usually a
 package named :code:`python-dev`).
@@ -46,12 +47,16 @@ package named :code:`python-dev`).
 ::
 
   $ export REPO_ROOT=grpc  # REPO_ROOT can be any directory of your choice
-  $ git clone -b $(curl -L https://grpc.io/release) https://github.com/grpc/grpc $REPO_ROOT
+  $ git clone -b RELEASE_TAG_HERE https://github.com/grpc/grpc $REPO_ROOT
   $ cd $REPO_ROOT
   $ git submodule update --init
 
+  # To include systemd socket-activation feature in the build,
+  # first install the `libsystemd-dev` package, then :
+  $ export GRPC_PYTHON_BUILD_WITH_SYSTEMD=1
+
   # For the next two commands do `sudo pip install` if you get permission-denied errors
-  $ pip install -rrequirements.txt
+  $ pip install -r requirements.txt
   $ GRPC_PYTHON_BUILD_WITH_CYTHON=1 pip install .
 
 You cannot currently install Python from source on Windows. Things might work
@@ -62,32 +67,6 @@ Troubleshooting
 ~~~~~~~~~~~~~~~
 
 Help, I ...
-
-* **... see a** :code:`pkg_resources.VersionConflict` **when I try to install
-  grpc**
-
-  This is likely because :code:`pip` doesn't own the offending dependency,
-  which in turn is likely because your operating system's package manager owns
-  it. You'll need to force the installation of the dependency:
-
-  :code:`pip install --ignore-installed $OFFENDING_DEPENDENCY`
-
-  For example, if you get an error like the following:
-
-  ::
-
-    Traceback (most recent call last):
-    File "<string>", line 17, in <module>
-     ...
-    File "/usr/lib/python2.7/dist-packages/pkg_resources.py", line 509, in find
-      raise VersionConflict(dist, req)
-    pkg_resources.VersionConflict: (six 1.8.0 (/usr/lib/python2.7/dist-packages), Requirement.parse('six>=1.10'))
-
-  You can fix it by doing:
-
-  ::
-
-    sudo pip install --ignore-installed six
 
 * **... see the following error on some platforms**
 
@@ -103,4 +82,17 @@ Help, I ...
   ::
 
     sudo apt-get install python-dev
+
+
+Versioning
+~~~~~~~~~~
+
+gRPC Python is developed in a monorepo shared with implementations of gRPC in
+other programming languages. While the minor versions are released in
+lock-step with other languages in the repo (e.g. 1.63.0 is guaranteed to exist
+for all languages), patch versions may be specific to only a single
+language. For example, if 1.63.1 is a C++-specific patch, 1.63.1 may not be
+uploaded to PyPi. As a result, it is __not__ a good assumption that the latest
+patch for a given minor version on Github is also the latest patch for that
+same minor version on PyPi.
 

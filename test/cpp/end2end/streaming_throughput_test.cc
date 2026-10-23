@@ -1,49 +1,49 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2015 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
+#include <grpc/grpc.h>
+#include <grpc/support/atm.h>
+#include <grpc/support/time.h>
+#include <grpcpp/channel.h>
+#include <grpcpp/client_context.h>
+#include <grpcpp/create_channel.h>
+#include <grpcpp/security/credentials.h>
+#include <grpcpp/security/server_credentials.h>
+#include <grpcpp/server.h>
+#include <grpcpp/server_builder.h>
+#include <grpcpp/server_context.h>
 #include <time.h>
+
 #include <mutex>
 #include <thread>
 
-#include <grpc++/channel.h>
-#include <grpc++/client_context.h>
-#include <grpc++/create_channel.h>
-#include <grpc++/security/credentials.h>
-#include <grpc++/security/server_credentials.h>
-#include <grpc++/server.h>
-#include <grpc++/server_builder.h>
-#include <grpc++/server_context.h>
-#include <grpc/grpc.h>
-#include <grpc/support/atm.h>
-#include <grpc/support/log.h>
-#include <grpc/support/thd.h>
-#include <grpc/support/time.h>
-
+#include "src/core/lib/experiments/experiments.h"
+#include "src/core/util/crash.h"
 #include "src/proto/grpc/testing/duplicate/echo_duplicate.grpc.pb.h"
 #include "src/proto/grpc/testing/echo.grpc.pb.h"
-#include "test/core/util/port.h"
-#include "test/core/util/test_config.h"
-
-#include <gtest/gtest.h>
+#include "test/core/test_util/port.h"
+#include "test/core/test_util/test_config.h"
+#include "test/cpp/end2end/end2end_test_utils.h"
+#include "gtest/gtest.h"
+#include "absl/log/log.h"
 
 using grpc::testing::EchoRequest;
 using grpc::testing::EchoResponse;
-using std::chrono::system_clock;
 
 const char* kLargeString =
     "("
@@ -86,14 +86,14 @@ const char* kLargeString =
 namespace grpc {
 namespace testing {
 
-class TestServiceImpl : public ::grpc::testing::EchoTestService::Service {
+class TestServiceImpl : public grpc::testing::EchoTestService::Service {
  public:
   static void BidiStream_Sender(
       ServerReaderWriter<EchoResponse, EchoRequest>* stream,
       gpr_atm* should_exit) {
     EchoResponse response;
     response.set_message(kLargeString);
-    while (gpr_atm_acq_load(should_exit) == static_cast<gpr_atm>(0)) {
+    while (gpr_atm_acq_load(should_exit) == gpr_atm{0}) {
       struct timespec tv = {0, 1000000};  // 1 ms
       struct timespec rem;
       // TODO (vpai): Mark this blocking
@@ -107,11 +107,11 @@ class TestServiceImpl : public ::grpc::testing::EchoTestService::Service {
 
   // Only implement the one method we will be calling for brevity.
   Status BidiStream(
-      ServerContext* context,
+      ServerContext* /*context*/,
       ServerReaderWriter<EchoResponse, EchoRequest>* stream) override {
     EchoRequest request;
     gpr_atm should_exit;
-    gpr_atm_rel_store(&should_exit, static_cast<gpr_atm>(0));
+    gpr_atm_rel_store(&should_exit, gpr_atm{0});
 
     std::thread sender(
         std::bind(&TestServiceImpl::BidiStream_Sender, stream, &should_exit));
@@ -124,7 +124,7 @@ class TestServiceImpl : public ::grpc::testing::EchoTestService::Service {
         tv = rem;
       };
     }
-    gpr_atm_rel_store(&should_exit, static_cast<gpr_atm>(1));
+    gpr_atm_rel_store(&should_exit, gpr_atm{1});
     sender.join();
     return Status::OK;
   }
@@ -146,8 +146,10 @@ class End2endTest : public ::testing::Test {
   void TearDown() override { server_->Shutdown(); }
 
   void ResetStub() {
-    std::shared_ptr<Channel> channel =
-        CreateChannel(server_address_.str(), InsecureChannelCredentials());
+    ChannelArguments args;
+    ApplyCommonChannelArguments(args);
+    std::shared_ptr<Channel> channel = grpc::CreateCustomChannel(
+        server_address_.str(), InsecureChannelCredentials(), args);
     stub_ = grpc::testing::EchoTestService::NewStub(channel);
   }
 
@@ -165,6 +167,9 @@ static void Drainer(ClientReaderWriter<EchoRequest, EchoResponse>* reader) {
 }
 
 TEST_F(End2endTest, StreamingThroughput) {
+  SKIP_TEST_FOR_PH2_CLIENT(
+      "TODO(tjagtap) [PH2][P3][Client][CPPE2E] Fails 2/100 times ");
+  SKIP_TEST_FOR_PH2_SERVER("TODO(tjagtap) [PH2][P1] Fix ");
   ResetStub();
   grpc::ClientContext context;
   auto stream = stub_->BidiStream(&context);
@@ -177,7 +182,7 @@ TEST_F(End2endTest, StreamingThroughput) {
     request.set_message(kLargeString);
     ASSERT_TRUE(stream->Write(request));
     if (i % 1000 == 0) {
-      gpr_log(GPR_INFO, "Send count = %d", i);
+      LOG(INFO) << "Send count = " << i;
     }
   }
   stream->WritesDone();
@@ -188,7 +193,7 @@ TEST_F(End2endTest, StreamingThroughput) {
 }  // namespace grpc
 
 int main(int argc, char** argv) {
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(&argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

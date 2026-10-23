@@ -12,34 +12,58 @@
 @rem See the License for the specific language governing permissions and
 @rem limitations under the License.
 
-@rem set path to python & mingw compiler
-set PATH=C:\%1;C:\%1\scripts;C:\msys64\mingw%2\bin;C:\tools\msys64\mingw%2\bin;%PATH%
+@rem set path to python
+set PATH=C:\%1;C:\%1\scripts;%PATH%
 
-pip install --upgrade six
-pip install --upgrade setuptools
-pip install -rrequirements.txt
+@rem set path to the existed mingw compiler
+set PATH=C:\msys64\mingw%2\bin;C:\tools\msys64\mingw%2\bin;%PATH%
+:end_mingw64_installation
 
+python -m pip install --upgrade pip six
+@rem Ping to a single version to make sure we're building the same artifacts
+python -m pip install setuptools==77.0.1 wheel==0.43.0
+python -m pip install --upgrade "cython==3.2.8"
+python -m pip install -r requirements.txt --user
+
+@rem set GRPC_PYTHON_OVERRIDE_CYGWIN_DETECTION_FOR_27=1
 set GRPC_PYTHON_BUILD_WITH_CYTHON=1
+set CCACHE_NOHASHDIR=true
+set CCACHE_LOGFILE=T:\src\github\grpc\reports\ccache_%1_%2.log
+
+@rem Allow build_ext to build C/C++ files in parallel
+@rem by enabling a monkeypatch. It speeds up the build a lot.
+@rem Use externally provided GRPC_PYTHON_BUILD_EXT_COMPILER_JOBS value if set.
+if "%GRPC_PYTHON_BUILD_EXT_COMPILER_JOBS%"=="" (
+  set GRPC_PYTHON_BUILD_EXT_COMPILER_JOBS=4
+)
 
 mkdir -p %ARTIFACTS_OUT%
 set ARTIFACT_DIR=%cd%\%ARTIFACTS_OUT%
 
+
+@rem use short temp directory to avoid linker command file errors caused by
+@rem exceeding 131071 characters.
+set "GRPC_PYTHON_BUILD_USE_SHORT_TEMP_DIR_NAME=1"
+
+@rem Build gRPC Python distribution
+python -m build --no-isolation --sdist || goto :error
+python -m build --no-isolation --wheel || goto :error
+
 @rem Set up gRPC Python tools
 python tools\distrib\python\make_grpcio_tools.py
 
-@rem Build gRPC Python extensions
-python setup.py build_ext -c %EXT_COMPILER% || goto :error
-
+@rem Build grpcio-tools Python distribution
 pushd tools\distrib\python\grpcio_tools
-python setup.py build_ext -c %EXT_COMPILER% || goto :error
+python -m build --no-isolation --sdist || goto :error
+python -m build --no-isolation --wheel || goto :error
 popd
 
-@rem Build gRPC Python distributions
-python setup.py bdist_wheel || goto :error
-
-pushd tools\distrib\python\grpcio_tools
-python setup.py bdist_wheel || goto :error
-popd
+@rem Ensure the generate artifacts are valid.
+@rem Use --user so the install also works on Kokoro VMs whose system
+@rem site-packages dir has restricted permissions (see e.g. Permission denied
+@rem on zipp-*-dist-info/INSTALLER when installing twine without --user).
+python -m pip install --user packaging==21.3 twine==5.0.0
+python -m twine check dist\* tools\distrib\python\grpcio_tools\dist\* || goto :error
 
 xcopy /Y /I /S dist\* %ARTIFACT_DIR% || goto :error
 xcopy /Y /I /S tools\distrib\python\grpcio_tools\dist\* %ARTIFACT_DIR% || goto :error

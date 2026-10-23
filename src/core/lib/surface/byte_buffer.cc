@@ -1,26 +1,32 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2015 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
 #include <grpc/byte_buffer.h>
+#include <grpc/grpc.h>
+#include <grpc/impl/compression_types.h>
+#include <grpc/slice.h>
+#include <grpc/slice_buffer.h>
 #include <grpc/support/alloc.h>
-#include <grpc/support/log.h>
+#include <grpc/support/port_platform.h>
+#include <stddef.h>
 
-#include "src/core/lib/slice/slice_internal.h"
+#include "src/core/lib/iomgr/exec_ctx.h"
+#include "src/core/lib/slice/slice.h"
 
 grpc_byte_buffer* grpc_raw_byte_buffer_create(grpc_slice* slices,
                                               size_t nslices) {
@@ -33,12 +39,12 @@ grpc_byte_buffer* grpc_raw_compressed_byte_buffer_create(
     grpc_compression_algorithm compression) {
   size_t i;
   grpc_byte_buffer* bb =
-      (grpc_byte_buffer*)gpr_malloc(sizeof(grpc_byte_buffer));
+      static_cast<grpc_byte_buffer*>(gpr_malloc(sizeof(grpc_byte_buffer)));
   bb->type = GRPC_BB_RAW;
   bb->data.raw.compression = compression;
   grpc_slice_buffer_init(&bb->data.raw.slice_buffer);
   for (i = 0; i < nslices; i++) {
-    grpc_slice_ref_internal(slices[i]);
+    grpc_core::CSliceRef(slices[i]);
     grpc_slice_buffer_add(&bb->data.raw.slice_buffer, slices[i]);
   }
   return bb;
@@ -47,7 +53,7 @@ grpc_byte_buffer* grpc_raw_compressed_byte_buffer_create(
 grpc_byte_buffer* grpc_raw_byte_buffer_from_reader(
     grpc_byte_buffer_reader* reader) {
   grpc_byte_buffer* bb =
-      (grpc_byte_buffer*)gpr_malloc(sizeof(grpc_byte_buffer));
+      static_cast<grpc_byte_buffer*>(gpr_malloc(sizeof(grpc_byte_buffer)));
   grpc_slice slice;
   bb->type = GRPC_BB_RAW;
   bb->data.raw.compression = GRPC_COMPRESS_NONE;
@@ -71,14 +77,13 @@ grpc_byte_buffer* grpc_byte_buffer_copy(grpc_byte_buffer* bb) {
 
 void grpc_byte_buffer_destroy(grpc_byte_buffer* bb) {
   if (!bb) return;
-  grpc_exec_ctx exec_ctx = GRPC_EXEC_CTX_INIT;
+  grpc_core::ExecCtx exec_ctx;
   switch (bb->type) {
     case GRPC_BB_RAW:
-      grpc_slice_buffer_destroy_internal(&exec_ctx, &bb->data.raw.slice_buffer);
+      grpc_slice_buffer_destroy(&bb->data.raw.slice_buffer);
       break;
   }
   gpr_free(bb);
-  grpc_exec_ctx_finish(&exec_ctx);
 }
 
 size_t grpc_byte_buffer_length(grpc_byte_buffer* bb) {

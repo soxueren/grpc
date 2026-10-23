@@ -20,6 +20,7 @@
 #define GRPC_CENSUS_H
 
 #include <grpc/grpc.h>
+#include <grpc/support/port_platform.h>
 
 #ifdef __cplusplus
 extern "C" {

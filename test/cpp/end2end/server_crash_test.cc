@@ -1,43 +1,43 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
+//
+//
+// Copyright 2015 gRPC authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+//
 
-#include <grpc++/channel.h>
-#include <grpc++/client_context.h>
-#include <grpc++/create_channel.h>
-#include <grpc++/server.h>
-#include <grpc++/server_builder.h>
-#include <grpc++/server_context.h>
 #include <grpc/grpc.h>
-#include <grpc/support/log.h>
-#include <grpc/support/thd.h>
 #include <grpc/support/time.h>
+#include <grpcpp/channel.h>
+#include <grpcpp/client_context.h>
+#include <grpcpp/create_channel.h>
+#include <grpcpp/server.h>
+#include <grpcpp/server_builder.h>
+#include <grpcpp/server_context.h>
 
+#include "src/core/util/crash.h"
+#include "src/core/util/grpc_check.h"
 #include "src/proto/grpc/testing/duplicate/echo_duplicate.grpc.pb.h"
 #include "src/proto/grpc/testing/echo.grpc.pb.h"
-#include "test/core/util/port.h"
-#include "test/core/util/test_config.h"
+#include "test/core/test_util/port.h"
+#include "test/core/test_util/test_config.h"
 #include "test/cpp/util/subprocess.h"
-
-#include <gtest/gtest.h>
+#include "gtest/gtest.h"
+#include "absl/log/log.h"
+#include "absl/memory/memory.h"
 
 using grpc::testing::EchoRequest;
 using grpc::testing::EchoResponse;
-using std::chrono::system_clock;
 
 static std::string g_root;
 
@@ -46,18 +46,18 @@ namespace testing {
 
 namespace {
 
-class ServiceImpl final : public ::grpc::testing::EchoTestService::Service {
+class ServiceImpl final : public grpc::testing::EchoTestService::Service {
  public:
   ServiceImpl() : bidi_stream_count_(0), response_stream_count_(0) {}
 
   Status BidiStream(
-      ServerContext* context,
+      ServerContext* /*context*/,
       ServerReaderWriter<EchoResponse, EchoRequest>* stream) override {
     bidi_stream_count_++;
     EchoRequest request;
     EchoResponse response;
     while (stream->Read(&request)) {
-      gpr_log(GPR_INFO, "recv msg %s", request.message().c_str());
+      LOG(INFO) << "recv msg " << request.message();
       response.set_message(request.message());
       stream->Write(response);
       gpr_sleep_until(gpr_time_add(gpr_now(GPR_CLOCK_REALTIME),
@@ -66,7 +66,8 @@ class ServiceImpl final : public ::grpc::testing::EchoTestService::Service {
     return Status::OK;
   }
 
-  Status ResponseStream(ServerContext* context, const EchoRequest* request,
+  Status ResponseStream(ServerContext* /*context*/,
+                        const EchoRequest* /*request*/,
                         ServerWriter<EchoResponse>* writer) override {
     EchoResponse response;
     response_stream_count_++;
@@ -99,9 +100,10 @@ class CrashTest : public ::testing::Test {
     std::ostringstream addr_stream;
     addr_stream << "localhost:" << port;
     auto addr = addr_stream.str();
-    client_.reset(new SubProcess({g_root + "/server_crash_test_client",
+    client_ = std::make_unique<SubProcess>(
+        std::vector<std::string>({g_root + "/server_crash_test_client",
                                   "--address=" + addr, "--mode=" + mode}));
-    GPR_ASSERT(client_);
+    GRPC_CHECK(client_);
 
     ServerBuilder builder;
     builder.AddListeningPort(addr, grpc::InsecureServerCredentials());
@@ -127,7 +129,7 @@ TEST_F(CrashTest, ResponseStream) {
                                gpr_time_from_seconds(60, GPR_TIMESPAN)));
   KillClient();
   server->Shutdown();
-  GPR_ASSERT(HadOneResponseStream());
+  GRPC_CHECK(HadOneResponseStream());
 }
 
 TEST_F(CrashTest, BidiStream) {
@@ -137,7 +139,7 @@ TEST_F(CrashTest, BidiStream) {
                                gpr_time_from_seconds(60, GPR_TIMESPAN)));
   KillClient();
   server->Shutdown();
-  GPR_ASSERT(HadOneBidiStream());
+  GRPC_CHECK(HadOneBidiStream());
 }
 
 }  // namespace
@@ -154,7 +156,7 @@ int main(int argc, char** argv) {
     g_root = ".";
   }
 
-  grpc_test_init(argc, argv);
+  grpc::testing::TestEnvironment env(&argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

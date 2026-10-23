@@ -23,13 +23,12 @@ class Struct
     # is non-nil and not OK.
     def check_status
       return nil if status.nil?
-      fail GRPC::Cancelled if status.code == GRPC::Core::StatusCodes::CANCELLED
       if status.code != GRPC::Core::StatusCodes::OK
         GRPC.logger.debug("Failing with status #{status}")
         # raise BadStatus, propagating the metadata if present.
-        md = status.metadata
         fail GRPC::BadStatus.new_status_exception(
-          status.code, status.details, md)
+          status.code, status.details, status.metadata,
+          status.debug_error_string)
       end
       status
     end
@@ -45,8 +44,8 @@ module GRPC
     include Core::CallOps
     extend Forwardable
     attr_reader :deadline, :metadata_sent, :metadata_to_send, :peer, :peer_cert
-    def_delegators :@call, :cancel, :metadata, :write_flag, :write_flag=,
-                   :trailing_metadata, :status
+    def_delegators :@call, :cancel, :cancel_with_status, :metadata,
+                   :write_flag, :write_flag=, :trailing_metadata, :status
 
     # client_invoke begins a client invocation.
     #
@@ -116,10 +115,11 @@ module GRPC
 
     # Sends the initial metadata that has yet to be sent.
     # Does nothing if metadata has already been sent for this call.
-    def send_initial_metadata
+    def send_initial_metadata(new_metadata = {})
       @send_initial_md_mutex.synchronize do
         return if @metadata_sent
-        @metadata_tag = ActiveCall.client_invoke(@call, @metadata_to_send)
+        @metadata_to_send.merge!(new_metadata)
+        ActiveCall.client_invoke(@call, @metadata_to_send)
         @metadata_sent = true
       end
     end
@@ -164,9 +164,18 @@ module GRPC
     end
 
     def receive_and_check_status
-      batch_result = @call.run_batch(RECV_STATUS_ON_CLIENT => nil)
+      ops = { RECV_STATUS_ON_CLIENT => nil }
+      ops[RECV_INITIAL_METADATA] = nil unless @metadata_received
+      batch_result = @call.run_batch(ops)
+      unless @metadata_received
+        @call.metadata = batch_result.metadata
+      end
       set_input_stream_done
       attach_status_results_and_complete_call(batch_result)
+    ensure
+      # Ensure we don't attempt to request the initial metadata again
+      # in case an exception occurs.
+      @metadata_received = true
     end
 
     def attach_status_results_and_complete_call(recv_status_batch_result)
@@ -226,16 +235,15 @@ module GRPC
     def server_unary_response(req, trailing_metadata: {},
                               code: Core::StatusCodes::OK, details: 'OK')
       ops = {}
+      ops[SEND_MESSAGE] = @marshal.call(req)
+      ops[SEND_STATUS_FROM_SERVER] = Struct::Status.new(
+        code, details, trailing_metadata)
+      ops[RECV_CLOSE_ON_SERVER] = nil
+
       @send_initial_md_mutex.synchronize do
         ops[SEND_INITIAL_METADATA] = @metadata_to_send unless @metadata_sent
         @metadata_sent = true
       end
-
-      payload = @marshal.call(req)
-      ops[SEND_MESSAGE] = payload
-      ops[SEND_STATUS_FROM_SERVER] = Struct::Status.new(
-        code, details, trailing_metadata)
-      ops[RECV_CLOSE_ON_SERVER] = nil
 
       @call.run_batch(ops)
       set_output_stream_done
@@ -253,9 +261,15 @@ module GRPC
       batch_result = @call.run_batch(ops)
       unless @metadata_received
         @call.metadata = batch_result.metadata
-        @metadata_received = true
       end
       get_message_from_batch_result(batch_result)
+    rescue GRPC::Core::CallError => e
+      GRPC.logger.info("remote_read: #{e}")
+      nil
+    ensure
+      # Ensure we don't attempt to request the initial metadata again
+      # in case an exception occurs.
+      @metadata_received = true
     end
 
     def get_message_from_batch_result(recv_message_batch_result)
@@ -321,18 +335,15 @@ module GRPC
     # @return [Enumerator] if no block was given
     def each_remote_read_then_finish
       return enum_for(:each_remote_read_then_finish) unless block_given?
-      begin
-        loop do
-          resp = remote_read
-          if resp.nil?  # the last response was received
-            receive_and_check_status
-            break
-          end
-          yield resp
-        end
-      ensure
-        set_input_stream_done
+      loop do
+        resp = remote_read
+        break if resp.nil?  # the last response was received
+        yield resp
       end
+
+      receive_and_check_status
+    ensure
+      set_input_stream_done
     end
 
     # request_response sends a request to a GRPC server, and returns the
@@ -388,7 +399,7 @@ module GRPC
     def client_streamer(requests, metadata: {})
       raise_error_if_already_executed
       begin
-        merge_metadata_and_send_if_not_already_sent(metadata)
+        send_initial_metadata(metadata)
         requests.each { |r| @call.run_batch(SEND_MESSAGE => @marshal.call(r)) }
       rescue GRPC::Core::CallError => e
         receive_and_check_status # check for Cancelled
@@ -490,7 +501,7 @@ module GRPC
       raise_error_if_already_executed
       # Metadata might have already been sent if this is an operation view
       begin
-        merge_metadata_and_send_if_not_already_sent(metadata)
+        send_initial_metadata(metadata)
       rescue GRPC::Core::CallError => e
         batch_result = @call.run_batch(RECV_STATUS_ON_CLIENT => nil)
         set_input_stream_done
@@ -571,15 +582,6 @@ module GRPC
       end
     end
 
-    def merge_metadata_and_send_if_not_already_sent(new_metadata = {})
-      @send_initial_md_mutex.synchronize do
-        return if @metadata_sent
-        @metadata_to_send.merge!(new_metadata)
-        @call.run_batch(SEND_INITIAL_METADATA => @metadata_to_send)
-        @metadata_sent = true
-      end
-    end
-
     def attach_peer_cert(peer_cert)
       @peer_cert = peer_cert
     end
@@ -618,6 +620,8 @@ module GRPC
     # @param metadata [Hash] metadata to be sent to the server. If a value is
     # a list, multiple metadata for its key are sent
     def start_call(metadata = {})
+      # TODO(apolcyn): we should cancel and clean up the call in case this
+      # send initial MD op fails.
       merge_metadata_to_send(metadata) && send_initial_metadata
     end
 
@@ -663,9 +667,10 @@ module GRPC
 
     # Operation limits access to an ActiveCall's methods for use as
     # a Operation on the client.
-    Operation = view_class(:cancel, :cancelled?, :deadline, :execute,
-                           :metadata, :status, :start_call, :wait, :write_flag,
-                           :write_flag=, :trailing_metadata)
+    # TODO(apolcyn): expose peer getter
+    Operation = view_class(:cancel, :cancel_with_status, :cancelled?, :deadline,
+                           :execute, :metadata, :status, :start_call, :wait,
+                           :write_flag, :write_flag=, :trailing_metadata)
 
     # InterceptableView further limits access to an ActiveCall's methods
     # for use in interceptors on the client, exposing only the deadline

@@ -12,91 +12,121 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//bazel:grpc_build_system.bzl", "grpc_cc_library", "grpc_cc_test", "grpc_cc_binary", "grpc_package")
+load("//bazel:grpc_build_system.bzl", "grpc_cc_test", "grpc_package")
+load("//test/core/test_util:grpc_fuzzer.bzl", "grpc_fuzz_test")
 
-grpc_package(name = "test/core/slice")
-
-licenses(["notice"])  # Apache v2
-
-load("//test/core/util:grpc_fuzzer.bzl", "grpc_fuzzer")
-
-grpc_fuzzer(
-    name = "percent_encode_fuzzer",
-    srcs = ["percent_encode_fuzzer.cc"],
-    language = "C++",
-    corpus = "percent_encode_corpus",
-    deps = [
-        "//:gpr",
-        "//:grpc",
-        "//test/core/util:grpc_test_util",
+grpc_package(
+    name = "test/core/slice",
+    features = [
+        "layering_check",
+        "parse_headers",
     ],
 )
 
-grpc_fuzzer(
-    name = "percent_decode_fuzzer",
-    srcs = ["percent_decode_fuzzer.cc"],
-    language = "C++",
-    corpus = "percent_decode_corpus",
+licenses(["notice"])
+
+grpc_fuzz_test(
+    name = "percent_encode_fuzzer",
+    srcs = ["percent_encode_fuzzer.cc"],
+    external_deps = [
+        "absl/log:check",
+        "fuzztest",
+        "fuzztest_main",
+    ],
+    tags = ["no_windows"],
     deps = [
         "//:gpr",
         "//:grpc",
-        "//test/core/util:grpc_test_util",
+        "//src/core:grpc_check",
+        "//src/core:percent_encoding",
+        "//src/core:slice",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
 grpc_cc_test(
     name = "percent_encoding_test",
     srcs = ["percent_encoding_test.cc"],
-    language = "C++",
+    external_deps = [
+        "gtest",
+        "absl/log:log",
+    ],
+    uses_event_engine = False,
+    uses_polling = False,
     deps = [
         "//:gpr",
         "//:grpc",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
+        "//src/core:percent_encoding",
+        "//src/core:slice",
+        "//test/core/test_util:grpc_test_util",
     ],
 )
 
 grpc_cc_test(
     name = "slice_test",
     srcs = ["slice_test.cc"],
-    deps = ["//:grpc", "//test/core/util:grpc_test_util", "//:gpr", "//test/core/util:gpr_test_util"],
-    language = "C++",
+    external_deps = [
+        "absl/log:log",
+        "gtest",
+        "absl/strings",
+    ],
+    uses_event_engine = False,
+    uses_polling = False,
+    deps = [
+        "//:gpr",
+        "//:grpc",
+        "//src/core:no_destruct",
+        "//src/core:slice",
+        "//src/core:slice_refcount",
+        "//test/core/test_util:build",
+    ],
 )
 
 grpc_cc_test(
     name = "slice_string_helpers_test",
     srcs = ["slice_string_helpers_test.cc"],
-    language = "C++",
+    external_deps = [
+        "absl/log:log",
+        "gtest",
+    ],
+    uses_event_engine = False,
+    uses_polling = False,
     deps = [
         "//:gpr",
-        "//:grpc",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
+        "//src/core:slice",
     ],
 )
 
 grpc_cc_test(
     name = "slice_buffer_test",
     srcs = ["slice_buffer_test.cc"],
-    deps = ["//:grpc", "//test/core/util:grpc_test_util", "//:gpr", "//test/core/util:gpr_test_util"],
-    language = "C++",
+    external_deps = [
+        "absl/log:check",
+        "gtest",
+    ],
+    uses_event_engine = False,
+    uses_polling = False,
+    deps = [
+        "//:gpr",
+        "//:gpr_platform",
+        "//:grpc",
+        "//src/core:grpc_check",
+        "//src/core:slice",
+        "//src/core:slice_buffer",
+        "//test/core/test_util:grpc_test_util",
+    ],
 )
 
 grpc_cc_test(
-    name = "slice_hash_table_test",
-    srcs = ["slice_hash_table_test.cc"],
-    deps = ["//:grpc", "//test/core/util:grpc_test_util", "//:gpr", "//test/core/util:gpr_test_util"],
-    language = "C++",
-)
-
-grpc_cc_test(
-    name = "b64_test",
-    srcs = ["b64_test.cc"],
-    language = "C++",
+    name = "c_slice_buffer_test",
+    srcs = ["c_slice_buffer_test.cc"],
+    external_deps = ["gtest"],
+    uses_event_engine = False,
+    uses_polling = False,
     deps = [
         "//:gpr",
         "//:grpc",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
+        "//src/core:slice",
+        "//test/core/test_util:grpc_test_util",
     ],
 )

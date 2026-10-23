@@ -31,6 +31,7 @@ end if ENV['COVERAGE_NAME']
 require 'rspec'
 require 'logging'
 require 'rspec/logging_helper'
+require 'grpc'
 
 require_relative 'support/services'
 require_relative 'support/helpers'
@@ -51,7 +52,7 @@ Logging.logger['GRPC::BidiCall'].level = :info
 # logs will be stored in the @log_output variable. It is a StringIO instance.
 RSpec.configure do |config|
   include RSpec::LoggingHelper
-  config.capture_log_messages  # comment this out to see logs during test runs
+  config.capture_log_messages # comment this out to see logs during test runs
   include GRPC::Spec::Helpers
 end
 

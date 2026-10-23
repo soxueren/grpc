@@ -18,10 +18,12 @@ import threading
 import grpc
 
 _NOT_YET_OBSERVED = object()
+logging.basicConfig()
+_LOGGER = logging.getLogger(__name__)
 
 
 def _cancel(handler):
-    return handler.cancel(grpc.StatusCode.CANCELLED, 'Locally cancelled!')
+    return handler.cancel(grpc.StatusCode.CANCELLED, "Locally cancelled!")
 
 
 def _is_active(handler):
@@ -56,7 +58,6 @@ def _details(handler):
 
 
 class _Call(grpc.Call):
-
     def __init__(self, handler):
         self._handler = handler
 
@@ -86,7 +87,6 @@ class _Call(grpc.Call):
 
 
 class _RpcErrorCall(grpc.RpcError, grpc.Call):
-
     def __init__(self, handler):
         self._handler = handler
 
@@ -119,14 +119,12 @@ def _next(handler):
     read = handler.take_response()
     if read.code is None:
         return read.response
-    elif read.code is grpc.StatusCode.OK:
+    if read.code is grpc.StatusCode.OK:
         raise StopIteration()
-    else:
-        raise _RpcErrorCall(handler)
+    raise _RpcErrorCall(handler)
 
 
-class _HandlerExtras(object):
-
+class _HandlerExtras:
     def __init__(self):
         self.condition = threading.Condition()
         self.unary_response = _NOT_YET_OBSERVED
@@ -135,11 +133,10 @@ class _HandlerExtras(object):
 
 def _with_extras_cancel(handler, extras):
     with extras.condition:
-        if handler.cancel(grpc.StatusCode.CANCELLED, 'Locally cancelled!'):
+        if handler.cancel(grpc.StatusCode.CANCELLED, "Locally cancelled!"):
             extras.cancelled = True
             return True
-        else:
-            return False
+        return False
 
 
 def _extras_without_cancelled(extras):
@@ -162,18 +159,18 @@ def _with_extras_unary_response(handler, extras):
             if read.code is None:
                 extras.unary_response = read.response
                 return read.response
-            else:
-                raise _RpcErrorCall(handler)
-        else:
-            return extras.unary_response
+            raise _RpcErrorCall(handler)
+        return extras.unary_response
 
 
 def _exception(unused_handler):
-    raise NotImplementedError('TODO!')
+    error_msg = "TODO!"
+    raise NotImplementedError(error_msg)
 
 
 def _traceback(unused_handler):
-    raise NotImplementedError('TODO!')
+    error_msg = "TODO!"
+    raise NotImplementedError(error_msg)
 
 
 def _add_done_callback(handler, callback, future):
@@ -183,7 +180,6 @@ def _add_done_callback(handler, callback, future):
 
 
 class _FutureCall(grpc.Future, grpc.Call):
-
     def __init__(self, handler, extras):
         self._handler = handler
         self._extras = extras
@@ -235,7 +231,6 @@ class _FutureCall(grpc.Future, grpc.Call):
 
 
 def consume_requests(request_iterator, handler):
-
     def _consume():
         while True:
             try:
@@ -247,8 +242,8 @@ def consume_requests(request_iterator, handler):
                 handler.close_requests()
                 break
             except Exception:  # pylint: disable=broad-except
-                details = 'Exception iterating requests!'
-                logging.exception(details)
+                details = "Exception iterating requests!"
+                _LOGGER.exception(details)
                 handler.cancel(grpc.StatusCode.UNKNOWN, details)
 
     consumption = threading.Thread(target=_consume)
@@ -261,10 +256,8 @@ def blocking_unary_response(handler):
         unused_trailing_metadata, code, unused_details = handler.termination()
         if code is grpc.StatusCode.OK:
             return read.response
-        else:
-            raise _RpcErrorCall(handler)
-    else:
         raise _RpcErrorCall(handler)
+    raise _RpcErrorCall(handler)
 
 
 def blocking_unary_response_with_call(handler):
@@ -273,10 +266,8 @@ def blocking_unary_response_with_call(handler):
         unused_trailing_metadata, code, unused_details = handler.termination()
         if code is grpc.StatusCode.OK:
             return read.response, _Call(handler)
-        else:
-            raise _RpcErrorCall(handler)
-    else:
         raise _RpcErrorCall(handler)
+    raise _RpcErrorCall(handler)
 
 
 def future_call(handler):
@@ -284,7 +275,6 @@ def future_call(handler):
 
 
 class ResponseIteratorCall(grpc.Call):
-
     def __init__(self, handler):
         self._handler = handler
 

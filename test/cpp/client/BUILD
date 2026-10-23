@@ -12,40 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-licenses(["notice"])  # Apache v2
+load("//bazel:grpc_build_system.bzl", "grpc_cc_test", "grpc_package")
 
-load("//bazel:grpc_build_system.bzl", "grpc_cc_library", "grpc_cc_test", "grpc_package")
+licenses(["notice"])
 
-grpc_package(name = "test/cpp/client")
-
-grpc_cc_test(
-    name = "credentials_test",
-    srcs = ["credentials_test.cc"],
-    external_deps = [
-        "gtest",
-    ],
-    deps = [
-        "//:gpr",
-        "//:grpc",
-        "//:grpc++",
+grpc_package(
+    name = "test/cpp/client",
+    features = [
+        "layering_check",
+        "parse_headers",
     ],
 )
 
 grpc_cc_test(
-    name = "client_channel_stress_test",
-    srcs = ["client_channel_stress_test.cc"],
+    name = "credentials_test",
+    srcs = ["credentials_test.cc"],
+    data = [
+        "//src/core/tsi/test_creds:ca.pem",
+        "//src/core/tsi/test_creds:server1.key",
+        "//src/core/tsi/test_creds:server1.pem",
+    ],
+    external_deps = [
+        "absl/log:check",
+        "gtest",
+    ],
     deps = [
+        "//:exec_ctx",
         "//:gpr",
         "//:grpc",
         "//:grpc++",
-        "//:grpc_resolver_fake",
-        "//src/proto/grpc/lb/v1:load_balancer_proto",
-        "//src/proto/grpc/testing:echo_messages_proto",
-        "//src/proto/grpc/testing:echo_proto",
-        "//src/proto/grpc/testing/duplicate:echo_duplicate_proto",
-        "//test/core/util:gpr_test_util",
-        "//test/core/util:grpc_test_util",
-        "//test/cpp/end2end:test_service_impl",
-        "//test/cpp/util:test_util",
+        "//:grpc++_base",
+        "//:httpcli",
+        "//:uri",
+        "//src/core:env",
+        "//src/core:grpc_check",
+        "//src/core:grpc_crl_provider",
+        "//test/core/test_util:grpc_test_util",
+        "//test/cpp/util:tls_test_utils",
     ],
 )

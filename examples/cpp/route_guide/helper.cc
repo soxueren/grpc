@@ -20,33 +20,35 @@
 #include <cctype>
 #include <fstream>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "absl/flags/flag.h"
+#include "absl/log/log.h"
+
+#ifdef BAZEL_BUILD
+#include "examples/protos/route_guide.grpc.pb.h"
+#else
 #include "route_guide.grpc.pb.h"
+#endif
+
+#ifdef BAZEL_BUILD
+ABSL_FLAG(std::string, db_path, "examples/cpp/route_guide/route_guide_db.json",
+          "Path to db file");
+#else
+ABSL_FLAG(std::string, db_path, "route_guide_db.json", "Path to db file");
+#endif
 
 namespace routeguide {
 
 std::string GetDbFileContent(int argc, char** argv) {
-  std::string db_path;
-  std::string arg_str("--db_path");
-  if (argc > 1) {
-    std::string argv_1 = argv[1];
-    size_t start_position = argv_1.find(arg_str);
-    if (start_position != std::string::npos) {
-      start_position += arg_str.size();
-      if (argv_1[start_position] == ' ' ||
-          argv_1[start_position] == '=') {
-        db_path = argv_1.substr(start_position + 1);
-      }
-    }
-  } else {
-    db_path = "route_guide_db.json";
-  }
+  std::string db_path = absl::GetFlag(FLAGS_db_path);
   std::ifstream db_file(db_path);
   if (!db_file.is_open()) {
-    std::cout << "Failed to open " << db_path << std::endl;
-    return "";
+    LOG(ERROR) << "Failed to open " << db_path;
+    abort();
   }
   std::stringstream db;
   db << db_file.rdbuf();
@@ -54,23 +56,17 @@ std::string GetDbFileContent(int argc, char** argv) {
 }
 
 // A simple parser for the json db file. It requires the db file to have the
-// exact form of [{"location": { "latitude": 123, "longitude": 456}, "name":
-// "the name can be empty" }, { ... } ... The spaces will be stripped.
+// exact form of [{"location":{"latitude":123,"longitude":456},"name":
+// "the name can be empty"},{ ... }...
 class Parser {
  public:
   explicit Parser(const std::string& db) : db_(db) {
-    // Remove all spaces.
-    db_.erase(
-        std::remove_if(db_.begin(), db_.end(), isspace),
-        db_.end());
     if (!Match("[")) {
       SetFailedAndReturnFalse();
     }
   }
 
-  bool Finished() {
-    return current_ >= db_.size();
-  }
+  bool Finished() { return current_ >= db_.size(); }
 
   bool TryParseOne(Feature* feature) {
     if (failed_ || Finished() || !Match("{")) {
@@ -96,7 +92,7 @@ class Parser {
     if (current_ == db_.size()) {
       return SetFailedAndReturnFalse();
     }
-    feature->set_name(db_.substr(name_start, current_-name_start-1));
+    feature->set_name(db_.substr(name_start, current_ - name_start - 1));
     if (!Match("},")) {
       if (db_[current_ - 1] == ']' && current_ == db_.size()) {
         return true;
@@ -107,7 +103,6 @@ class Parser {
   }
 
  private:
-
   bool SetFailedAndReturnFalse() {
     failed_ = true;
     return false;
@@ -121,7 +116,8 @@ class Parser {
 
   void ReadLong(long* l) {
     size_t start = current_;
-    while (current_ != db_.size() && db_[current_] != ',' && db_[current_] != '}') {
+    while (current_ != db_.size() && db_[current_] != ',' &&
+           db_[current_] != '}') {
       current_++;
     }
     // It will throw an exception if fails.
@@ -137,27 +133,29 @@ class Parser {
   const std::string name_ = "\"name\":";
 };
 
+// Minifies a JSON string by removing all whitespace characters outside of
+// strings.
+std::string MinifyJson(const std::string& json) {
+  std::regex whitespaceOutsideQuotes(R"(\s+(?=(?:(?:[^"]*"){2})*[^"]*$))");
+  // Replace all matches with an empty string
+  return std::regex_replace(json, whitespaceOutsideQuotes, "");
+}
+
 void ParseDb(const std::string& db, std::vector<Feature>* feature_list) {
   feature_list->clear();
-  std::string db_content(db);
-  db_content.erase(
-      std::remove_if(db_content.begin(), db_content.end(), isspace),
-      db_content.end());
+  std::string db_content(MinifyJson(db));
 
   Parser parser(db_content);
   Feature feature;
   while (!parser.Finished()) {
     feature_list->push_back(Feature());
     if (!parser.TryParseOne(&feature_list->back())) {
-      std::cout << "Error parsing the db file";
+      LOG(ERROR) << "Error parsing the db file";
       feature_list->clear();
       break;
     }
   }
-  std::cout << "DB parsed, loaded " << feature_list->size()
-            << " features." << std::endl;
+  LOG(INFO) << "DB parsed, loaded " << feature_list->size() << " features.";
 }
 
-
 }  // namespace routeguide
-

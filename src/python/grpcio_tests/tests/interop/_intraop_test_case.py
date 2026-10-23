@@ -16,12 +16,12 @@
 from tests.interop import methods
 
 
-class IntraopTestCase(object):
+class IntraopTestCase:
     """Unit test methods.
 
-  This class must be mixed in with unittest.TestCase and a class that defines
-  setUp and tearDown methods that manage a stub attribute.
-  """
+    This class must be mixed in with unittest.TestCase and a class that defines
+    setUp and tearDown methods that manage a stub attribute.
+    """
 
     def testEmptyUnary(self):
         methods.TestCase.EMPTY_UNARY.test_interoperability(self.stub, None)
@@ -39,13 +39,16 @@ class IntraopTestCase(object):
         methods.TestCase.PING_PONG.test_interoperability(self.stub, None)
 
     def testCancelAfterBegin(self):
-        methods.TestCase.CANCEL_AFTER_BEGIN.test_interoperability(self.stub,
-                                                                  None)
+        methods.TestCase.CANCEL_AFTER_BEGIN.test_interoperability(
+            self.stub, None
+        )
 
     def testCancelAfterFirstResponse(self):
         methods.TestCase.CANCEL_AFTER_FIRST_RESPONSE.test_interoperability(
-            self.stub, None)
+            self.stub, None
+        )
 
     def testTimeoutOnSleepingServer(self):
         methods.TestCase.TIMEOUT_ON_SLEEPING_SERVER.test_interoperability(
-            self.stub, None)
+            self.stub, None
+        )

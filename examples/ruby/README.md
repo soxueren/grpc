@@ -31,7 +31,6 @@ INSTALL
 
   ```sh
   $ # from this directory
-  $ gem install bundler # if you don't already have bundler available
   $ bundle install
   ```
 
@@ -60,4 +59,4 @@ You can find a more detailed tutorial in [gRPC Basics: Ruby][]
 [helloworld.proto]:../protos/helloworld.proto
 [RVM]:https://www.rvm.io/
 [Install gRPC ruby]:../../src/ruby#installation
-[gRPC Basics: Ruby]:https://grpc.io/docs/tutorials/basic/ruby.html
+[gRPC Basics: Ruby]:https://grpc.io/docs/languages/ruby/basics

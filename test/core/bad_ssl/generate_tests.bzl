@@ -13,25 +13,86 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Houses grpc_bad_ssl_tests.
+"""
+
+load("//bazel:grpc_build_system.bzl", "grpc_cc_binary", "grpc_cc_library", "grpc_cc_test")
 
 def test_options():
-  return struct()
-
+    return struct()
 
 # maps test names to options
-BAD_SSL_TESTS = ['cert', 'alpn']
+BAD_SSL_TESTS = ["cert", "alpn"]
 
+# buildifier: disable=unnamed-macro
 def grpc_bad_ssl_tests():
-  native.cc_library(
-      name = 'bad_ssl_test_server',
-      srcs = ['server_common.cc'],
-      hdrs = ['server_common.h'],
-      deps = ['//test/core/util:grpc_test_util', '//:grpc', '//test/core/end2end:ssl_test_data']
-  )
-  for t in BAD_SSL_TESTS:
-    native.cc_test(
-        name = 'bad_ssl_%s_server' % t,
-        srcs = ['servers/%s.cc' % t],
-        deps = [':bad_ssl_test_server'],
-    )
+    """Instantiates gRPC bad SSL tests."""
 
+    grpc_cc_library(
+        name = "bad_ssl_test_server",
+        srcs = ["server_common.cc"],
+        hdrs = ["server_common.h"],
+        external_deps = [
+            "absl/log:check",
+            "absl/log:log",
+        ],
+        deps = [
+            "//test/core/test_util:grpc_test_util",
+            "//test/core/test_util:grpc_test_util_base",
+            "//:grpc",
+            "//:gpr",
+            "//src/core:grpc_check",
+        ],
+    )
+    for t in BAD_SSL_TESTS:
+        grpc_cc_binary(
+            name = "bad_ssl_%s_server" % t,
+            srcs = ["servers/%s.cc" % t],
+            external_deps = [
+                "absl/log",
+                "absl/log:check",
+            ],
+            deps = [
+                ":bad_ssl_test_server",
+                "//:alts_util",
+                "//:gpr",
+                "//:grpc_base",
+                "//:grpc_core_credentials_header",
+                "//:grpc_slice",
+                "//src/core:error",
+                "//src/core:grpc_check",
+                "//src/core:grpc_transport_chttp2_alpn",
+                "//src/core:useful",
+                "//test/core/test_util:grpc_test_util",
+            ],
+        )
+        grpc_cc_test(
+            name = "bad_ssl_%s_test" % t,
+            srcs = ["bad_ssl_test.cc"],
+            external_deps = [
+                "absl/log:check",
+                "gtest",
+            ],
+            data = [
+                ":bad_ssl_%s_server" % t,
+                "//src/core/tsi/test_creds:badserver.key",
+                "//src/core/tsi/test_creds:badserver.pem",
+                "//src/core/tsi/test_creds:ca.pem",
+                "//src/core/tsi/test_creds:server1.key",
+                "//src/core/tsi/test_creds:server1.pem",
+            ],
+            deps = [
+                "//test/core/test_util:grpc_test_util",
+                "//test/core/test_util:grpc_test_util_base",
+                "//:channel_arg_names",
+                "//:gpr",
+                "//:grpc",
+                "//:grpc_core_credentials_header",
+                "//:subprocess",
+                "//src/core:env",
+                "//src/core:grpc_check",
+                "//test/core/end2end:cq_verifier",
+            ],
+            tags = ["no_windows"],
+        )
